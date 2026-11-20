@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Dashboard de Controle de Tráfego Pago — Funil VSL/tráfego direto (Meta Ads × Compradores).
-Os valores do cliente (planilha, produto, taxa, rótulos, metas, worker da IA)
-ficam em `build/config.py` — veja `build/config.example.py` para o modelo e
-comentários de cada campo. Este arquivo (build.py) é a ENGINE, genérica para
-qualquer cliente; não deve ser editado por cliente.
+Dashboard de Controle de Tráfego Pago — Funil de CAPTAÇÃO DE LEADS
+(Google Ads × Leads). Os valores do cliente ficam em `build/config.py`.
 
-Lê duas abas de uma planilha Google (export CSV público) e emite os REGISTROS
-BRUTOS (meta[] / sales[]) dentro do HTML. Todo o cálculo/filtro/gráfico roda no
-navegador (ver build/template.html). Somente leitura; nunca escreve nas planilhas.
+Lê duas abas (export CSV público, SOMENTE LEITURA — nunca escreve nas
+planilhas) e emite os REGISTROS BRUTOS dentro do HTML:
+    meta[]  = linhas do Google Ads (dia × campanha × grupo de anúncios)
+    sales[] = leads (1 linha = 1 lead)
+Todo o cálculo/filtro/gráfico roda no navegador (build/app.js).
 
-Funil VSL / tráfego direto — não há etapa de "Leads"/"MQL":
-    Gasto → Impressões → Cliques → Page Views → Checkouts → Vendas → Faturamento
+Funil:  Anúncio → Página → Lead
+    Gasto · CPM · Cliques · CPC · CTR · Leads · CPL · Tx Conversão (Leads/Cliques)
 
-Teste local: python build/build.py --meta-file meta.csv --sales-file sales.csv --out dist/index.html
+Teste local:
+    python build/build.py --meta-file ads.csv --sales-file leads.csv --out dist/index.html
 """
 from __future__ import annotations
 
@@ -26,6 +26,7 @@ import os
 import re
 import sys
 import unicodedata
+import urllib.parse
 import urllib.request
 from datetime import datetime, timezone, timedelta
 
@@ -35,66 +36,60 @@ except ImportError:
     sys.exit(
         "ERRO: build/config.py não encontrado.\n"
         "Copie o modelo e preencha os valores do cliente:\n"
-        "    cp build/config.example.py build/config.py\n"
-        "Veja os comentários em cada campo de build/config.example.py."
+        "    cp build/config.example.py build/config.py"
     )
 
-_REQUIRED = ("SPREADSHEET_ID", "GID_META", "GID_SALES", "MAIN_PRODUCT_PREFIX",
-             "CLIENT_NAME", "MAIN_PRODUCT")
+_REQUIRED = ("SPREADSHEET_ID", "CLIENT_NAME")
 _missing = [name for name in _REQUIRED if not getattr(cfg, name, "")]
 if _missing:
     sys.exit(
         "ERRO: build/config.py está com campo(s) obrigatório(s) vazio(s): "
-        + ", ".join(_missing) + ".\n"
-        "Preencha build/config.py antes de rodar o build (ver build/config.example.py)."
+        + ", ".join(_missing) + "."
     )
 
-# Template: qualquer campo de texto que ainda tenha o marcador <<PREENCHER ...>>
+# Template: qualquer campo de texto que ainda tenha marcador <<PREENCHA ...>> (modelo)
 # interrompe o build com uma mensagem clara (em vez de um 404 da planilha).
 _pendentes = [name for name in dir(cfg)
               if name.isupper() and isinstance(getattr(cfg, name), str)
-              and "<<PREENCHER" in getattr(cfg, name)]
+              and "<<PREENCH" in getattr(cfg, name)]
 if _pendentes:
     sys.exit(
-        "ERRO: build/config.py ainda tem marcador(es) <<PREENCHER>> em: "
+        "ERRO: build/config.py ainda tem marcador(es) de preenchimento em: "
         + ", ".join(sorted(_pendentes)) + ".\n"
-        "Siga o CHECKLIST DE NOVO CLIENTE no topo do CLAUDE.md."
+        "Preencha build/config.py (modelo: build/config.example.py)."
     )
 
 SPREADSHEET_ID = cfg.SPREADSHEET_ID
-# Compradores pode estar em OUTRA planilha (cliente com 2 arquivos separados).
-# Ausente/vazio -> mesma planilha do Meta Ads (comportamento original).
 SPREADSHEET_ID_SALES = getattr(cfg, "SPREADSHEET_ID_SALES", "") or SPREADSHEET_ID
-GID_META = cfg.GID_META
-GID_SALES = cfg.GID_SALES
-TAX_FACTOR = cfg.TAX_FACTOR
-MAIN_PRODUCT_PREFIX = cfg.MAIN_PRODUCT_PREFIX
-COUNT_ALL_AS_PAID = cfg.COUNT_ALL_AS_PAID
+SHEET_META = getattr(cfg, "SHEET_META", "")
+SHEET_SALES = getattr(cfg, "SHEET_SALES", "")
+GID_META = getattr(cfg, "GID_META", "")
+GID_SALES = getattr(cfg, "GID_SALES", "")
+FUNNEL_PREFIX = getattr(cfg, "FUNNEL_PREFIX", "")
+TAX_FACTOR = getattr(cfg, "TAX_FACTOR", 1.0) or 1.0
 CLIENT_NAME = cfg.CLIENT_NAME
-CLIENT_SUB = cfg.CLIENT_SUB
-TAX_LABEL = cfg.TAX_LABEL
-MAIN_PRODUCT = cfg.MAIN_PRODUCT
-CAC_TARGET = cfg.CAC_TARGET
-ROAS_TARGET = cfg.ROAS_TARGET
-REPORT_BAND_LOW = cfg.REPORT_BAND_LOW
-REPORT_BAND_HIGH = cfg.REPORT_BAND_HIGH
-IA_WORKER_URL = cfg.IA_WORKER_URL
-# Qual coluna UTM da planilha de Compradores carrega o Ad Name do Meta.
-# Varia por cliente conforme o parametrizador de URL usado no anuncio:
-# uns mandam o nome do anuncio em utm_content, outros em utm_term (e ai o
-# utm_content costuma trazer o POSICIONAMENTO). Ausente/vazio -> utm_content
-# (padrao do template). Casar pela coluna errada zera as atribuicoes.
-_AD_UTM_VALIDAS = ("utm_content", "utm_term", "utm_medium")
-AD_UTM_COLUMN = getattr(cfg, "AD_UTM_COLUMN", "") or "utm_content"
-if AD_UTM_COLUMN not in _AD_UTM_VALIDAS:
-    sys.exit(
-        f"ERRO: AD_UTM_COLUMN={AD_UTM_COLUMN!r} em build/config.py nao e valido.\n"
-        "Use um de: " + ", ".join(_AD_UTM_VALIDAS) + "."
-    )
+CLIENT_SUB = getattr(cfg, "CLIENT_SUB", "")
+PLATFORM_NAME = getattr(cfg, "PLATFORM_NAME", "Google Ads")
+TAX_LABEL = getattr(cfg, "TAX_LABEL", "Imposto")
+CPL_TARGET = getattr(cfg, "CPL_TARGET", 0.0)
+CONV_TARGET = getattr(cfg, "CONV_TARGET", 0.0)
+REPORT_BAND_LOW = getattr(cfg, "REPORT_BAND_LOW", 0.70)
+REPORT_BAND_HIGH = getattr(cfg, "REPORT_BAND_HIGH", 1.30)
+IA_WORKER_URL = getattr(cfg, "IA_WORKER_URL", "")
 
-EXPORT_URL = "https://docs.google.com/spreadsheets/d/{sid}/export?format=csv&gid={gid}"
-META_CSV_URL = EXPORT_URL.format(sid=SPREADSHEET_ID, gid=GID_META)
-SALES_CSV_URL = EXPORT_URL.format(sid=SPREADSHEET_ID_SALES, gid=GID_SALES)
+
+def sheet_url(sid: str, gid: str, name: str) -> str:
+    """gid preenchido -> export CSV pelo gid; senão -> gviz CSV pelo NOME da aba."""
+    if gid:
+        return f"https://docs.google.com/spreadsheets/d/{sid}/export?format=csv&gid={gid}"
+    if not name:
+        sys.exit("ERRO: informe SHEET_META/SHEET_SALES (nome da aba) ou GID_META/GID_SALES em build/config.py.")
+    return (f"https://docs.google.com/spreadsheets/d/{sid}/gviz/tq?tqx=out:csv&headers=1"
+            f"&sheet={urllib.parse.quote(name)}")
+
+
+META_CSV_URL = sheet_url(SPREADSHEET_ID, GID_META, SHEET_META)
+SALES_CSV_URL = sheet_url(SPREADSHEET_ID_SALES, GID_SALES, SHEET_SALES)
 BRT = timezone(timedelta(hours=-3))   # horário de Brasília (exibição)
 
 
@@ -102,9 +97,11 @@ BRT = timezone(timedelta(hours=-3))   # horário de Brasília (exibição)
 # Leitura (só leitura das planilhas)
 # --------------------------------------------------------------------------- #
 def fetch_csv(url: str) -> list[list[str]]:
-    req = urllib.request.Request(url, headers={"User-Agent": "dash-vsl-bot/1.0"})
+    req = urllib.request.Request(url, headers={"User-Agent": "dash-leads-bot/1.0"})
     with urllib.request.urlopen(req, timeout=60) as resp:
         raw = resp.read().decode("utf-8", errors="replace")
+    if raw.lstrip().lower().startswith(("<!doctype", "<html")):
+        sys.exit(f"ERRO: a planilha não devolveu CSV (está pública 'qualquer pessoa com o link'?): {url}")
     return list(csv.reader(io.StringIO(raw)))
 
 
@@ -128,6 +125,11 @@ def norm(s: str | None) -> str:
     return strip_accents((s or "").strip().lower())
 
 
+def slug(s: str | None) -> str:
+    """'Moteis perto de mim' -> 'moteis-perto-de-mim' (casa Ad Group Name com utm_medium)."""
+    return re.sub(r"[^a-z0-9]+", "-", norm(s)).strip("-")
+
+
 def to_float(v) -> float:
     if v is None:
         return 0.0
@@ -137,7 +139,10 @@ def to_float(v) -> float:
     if not s:
         return 0.0
     if "," in s and "." in s:
-        s = s.replace(".", "").replace(",", ".")
+        if s.rfind(",") > s.rfind("."):
+            s = s.replace(".", "").replace(",", ".")
+        else:
+            s = s.replace(",", "")
     elif "," in s:
         s = s.replace(",", ".")
     try:
@@ -147,6 +152,7 @@ def to_float(v) -> float:
 
 
 def parse_date(v: str) -> str | None:
+    """Aceita 'AAAA-MM-DD', 'DD/MM/AAAA' e 'DD/MM/AAAA HH:MM[:SS]' (planilhas pt-BR)."""
     if not v:
         return None
     s = str(v).strip()
@@ -155,9 +161,16 @@ def parse_date(v: str) -> str | None:
     m = re.match(r"(\d{4})-(\d{2})-(\d{2})", s)
     if m:
         return f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
-    for fmt in ("%d/%m/%Y", "%m/%d/%Y", "%d/%m/%y", "%b %d, %Y", "%Y/%m/%d"):
+    m = re.match(r"(\d{1,2})/(\d{1,2})/(\d{4})", s)
+    if m:
+        d, mo, y = int(m.group(1)), int(m.group(2)), int(m.group(3))
         try:
-            return datetime.strptime(s, fmt).strftime("%Y-%m-%d")
+            return datetime(y, mo, d).strftime("%Y-%m-%d")
+        except ValueError:
+            return None
+    for fmt in ("%d/%m/%y", "%b %d, %Y", "%Y/%m/%d"):
+        try:
+            return datetime.strptime(s.split(" ")[0] if fmt != "%b %d, %Y" else s, fmt).strftime("%Y-%m-%d")
         except ValueError:
             continue
     return None
@@ -167,33 +180,17 @@ def is_test_row(rowtext: str) -> bool:
     return "<test lead" in rowtext.lower()
 
 
-def is_paid(status: str) -> bool:
-    """Considera venda apenas status pago/aprovado. Sem coluna Status -> conta."""
-    sn = norm(status)
-    if not sn:
-        return True
-    return any(k in sn for k in ("pag", "aprov", "paid", "conclu", "complet", "ativ"))
-
-
-def is_main_product(prod: str) -> bool:
-    return norm(prod).startswith(MAIN_PRODUCT_PREFIX)
+def is_test_name(name: str) -> bool:
+    return bool(re.search(r"\bteste?\b", norm(name)))
 
 
 # ----- Máscara de PII (a página publicada é pública) ----- #
-def mask_email(e: str) -> str:
-    e = (e or "").strip()
-    if "@" not in e:
-        return "—"
-    user, dom = e.split("@", 1)
-    keep = user[:2] if len(user) > 2 else user[:1]
-    return f"{keep}****@{dom}"
-
-
 def first_last_initial(name: str) -> str:
     parts = (name or "").strip().split()
     if not parts:
         return "—"
-    return parts[0] if len(parts) == 1 else f"{parts[0]} {parts[-1][:1]}."
+    first = parts[0].capitalize()
+    return first if len(parts) == 1 else f"{first} {parts[-1][:1].upper()}."
 
 
 # --------------------------------------------------------------------------- #
@@ -226,86 +223,58 @@ def cell(row, i):
 # Processamento -> registros brutos
 # --------------------------------------------------------------------------- #
 def process(meta_rows, sales_rows):
-    # ---------------- Aba META ADS ----------------
-    # Colunas reais: Day · Campaign Name · Ad Set Name · Ad Name · Amount Spent ·
-    #   Impressions · Link Clicks · Landing Page Views · Checkouts Initiated · ...
+    # ---------------- Aba GOOGLE ADS ----------------
+    # Colunas reais: Day · Campaign Name · Ad Group Name · Cost (Spend) · Impressions · Clicks
     mheader = meta_rows[0] if meta_rows else []
     midx = header_index(
         mheader,
-        {"day": ["day", "data"], "campaign": ["campaign name", "campaign"],
-         "adset": ["ad set name", "adset", "ad set"], "ad": ["ad name"],
-         "spent": ["amount spent", "valor gasto", "gasto"], "impr": ["impressions", "impress"],
-         "clicks": ["link clicks", "clicks", "cliques"],
-         "pv": ["landing page views", "page views", "pageview", "landing"],
-         "ck": ["checkouts initiated", "checkouts", "initiate checkout", "checkout"],
-         # Link do criativo no Instagram (coluna acrescentada pelo cliente na aba
-         # Meta Ads). Usada na aba Relatórios (Top/Piores anúncios) para linkar o
-         # anúncio. Aliases cobrem variações do cabeçalho.
-         "link": ["creative instagram permalink", "instagram permalink", "permalink",
-                  "creative link", "link do anuncio", "link do criativo"]},
-        {"day": 0, "campaign": 1, "adset": 2, "ad": 3, "spent": 4, "impr": 5,
-         "clicks": 6, "pv": 7, "ck": 8},
+        {"day": ["day", "data", "dia"], "campaign": ["campaign name", "campaign", "campanha"],
+         "adset": ["ad group name", "ad group", "grupo de anuncios", "ad set name"],
+         "spent": ["cost (spend)", "cost", "spend", "custo", "gasto", "amount spent"],
+         "impr": ["impressions", "impress"],
+         "clicks": ["clicks", "cliques", "link clicks"]},
+        {"day": 0, "campaign": 1, "adset": 2, "spent": 3, "impr": 4, "clicks": 5},
     )
 
     meta = []
-    # (campanha, anúncio) normalizados -> (campanha, conjunto) reais do Meta.
-    # A chave inclui a CAMPANHA porque o mesmo nome de anúncio (ex. "AD01") se
-    # repete em campanhas diferentes; casar só pelo nome do anúncio atribuiria a
-    # venda à campanha errada. Guardar os nomes
-    # do Meta também alinha a venda à mesma linha do gasto nas tabelas.
-    ad_map = {}
-    # Anúncio (nome, ex. "AD01") -> 1 permalink do Instagram. "Qualquer um
-    # correlato" ao anúncio serve (o mesmo criativo pode rodar em várias
-    # campanhas); guardamos o primeiro link não-vazio encontrado.
-    ad_links = {}
+    camp_map = {}    # campanha normalizada -> nome real
+    group_map = {}   # (campanha normalizada, slug do grupo) -> nome real do grupo
     for row in meta_rows[1:]:
         if not any((c or "").strip() for c in row):
             continue
         if is_test_row(" ".join(str(c) for c in row)):
             continue
-        camp = cell(row, midx["campaign"]) or "(sem campanha)"
-        adset = cell(row, midx["adset"]) or "(sem conjunto)"
-        ad = cell(row, midx["ad"]) or "(sem anúncio)"
-        key = (norm(camp), norm(ad))
-        if key not in ad_map:
-            ad_map[key] = (camp, adset)
-        link = cell(row, midx["link"])
-        if link and ad not in ad_links:
-            ad_links[ad] = link
+        camp = cell(row, midx["campaign"])
+        if not camp:
+            continue
+        if FUNNEL_PREFIX and not norm(camp).startswith(norm(FUNNEL_PREFIX)):
+            continue
+        adset = cell(row, midx["adset"]) or "(sem grupo)"
+        camp_map.setdefault(norm(camp), camp)
+        group_map.setdefault((norm(camp), slug(adset)), adset)
         meta.append({
             "d": parse_date(cell(row, midx["day"])),
-            "camp": camp, "adset": adset, "ad": ad,
+            "camp": camp, "adset": adset,
             "sp": round(to_float(cell(row, midx["spent"])), 4),
             "im": to_float(cell(row, midx["impr"])),
             "cl": to_float(cell(row, midx["clicks"])),
-            "pv": to_float(cell(row, midx["pv"])),
-            "ck": to_float(cell(row, midx["ck"])),
         })
 
-    # ---------------- Aba COMPRADORES ----------------
-    # Colunas reais: Data de Criação · Cliente / Nome · Cliente / E-mail · Produto ·
-    #   Valor da Venda · UTM Content · UTM Campaign · UTM Medium · UTM Source · Status
+    # ---------------- Aba LEADS ----------------
+    # Colunas reais: Data e hora · Nome · Telefone · Plataforma · Captura · Quando precisa ·
+    #   Pessoas · Motivo · utm_source · utm_medium · utm_campaign · utm_content · utm_term ·
+    #   Click ID · Status · Data do pernoite · Valor · Responsável · Observações
     sheader = sales_rows[0] if sales_rows else []
     sidx = header_index(
         sheader,
-        {"created": ["data de criacao", "data", "created", "created_time"],
-         "name": ["cliente / nome", "nome", "full_name"],
-         "email": ["cliente / e-mail", "e-mail", "email"],
-         "prod": ["produto", "product"],
-         # Receita do funil = coluna "Faturamento" (Valor + orderbumps por comprador),
-         # por isso "faturamento" vem ANTES de "valor" nos aliases.
-         "val": ["faturamento", "valor da venda", "valor", "value", "amount"],
-         "utm_content": ["utm content", "utm_content"],
-         "utm_term": ["utm term", "utm_term"],
-         "utm_campaign": ["utm campaign", "utm_campaign"],
-         "utm_medium": ["utm medium", "utm_medium"],
-         "status": ["status"]},
-        # Fallback posicional só p/ colunas que existem nesta planilha
-        # (Produto·Nome·Email·Data·Valor·Taxas·Faturamento). Sem fallback p/
-        # utm_*/status: a planilha não tem essas colunas, então ausência -> vazio
-        # (evita casar por posição com Taxas/Faturamento). Se um dia houver colunas
-        # UTM nomeadas, o match por nome acima as detecta normalmente.
-        {"created": 3, "name": 1, "email": 2, "prod": 0, "val": 6},
+        {"created": ["data e hora", "data", "created"],
+         "name": ["nome", "name"],
+         "plat": ["plataforma"],
+         "status": ["status"],
+         "utm_source": ["utm_source", "utm source"],
+         "utm_medium": ["utm_medium", "utm medium"],
+         "utm_campaign": ["utm_campaign", "utm campaign"]},
+        {"created": 0, "name": 1},
     )
 
     sales = []
@@ -314,48 +283,35 @@ def process(meta_rows, sales_rows):
             continue
         if is_test_row(" ".join(str(c) for c in row)):
             continue
-        if not COUNT_ALL_AS_PAID and not is_paid(cell(row, sidx["status"])):
+        name = cell(row, sidx["name"])
+        if is_test_name(name):
             continue
-        prod = cell(row, sidx["prod"])
-        # O identificador do anúncio no Meta (Ad Name) vem da coluna UTM apontada
-        # por AD_UTM_COLUMN em build/config.py — que coluna é depende do
-        # parametrizador de URL do cliente. A outra normalmente carrega o
-        # POSICIONAMENTO (Instagram_Feed/Stories, Facebook_Mobile_Feed), que não
-        # casa com nada do Meta; conferir antes de mudar.
-        ad = cell(row, sidx[AD_UTM_COLUMN]) or "(sem anúncio)"
-        sale_camp = cell(row, sidx["utm_campaign"]) or "(sem campanha)"
-        main = is_main_product(prod)
-        # Match com o Meta = campanha + anúncio juntos (o mesmo Ad Name se repete
-        # entre campanhas; casar só pelo anúncio atribui a venda à campanha errada).
-        meta_key = (norm(sale_camp), norm(ad))
-        meta_hit = ad_map.get(meta_key)
-        # Atribuição ao tráfego rastreado: produto principal OU par campanha+anúncio
-        # que existe no Meta (captura orderbumps/upsells que carregam a UTM do anúncio).
-        attributed = main or (meta_hit is not None)
-        if not attributed:
+        d = parse_date(cell(row, sidx["created"]))
+        if not d:
             continue
-        # Quando casa com o Meta, usa a campanha/conjunto REAIS do Meta (mantém a
-        # venda na mesma linha do gasto nas tabelas). Senão, usa as UTMs da venda.
-        if meta_hit is not None:
-            camp, adset = meta_hit
+        ucamp = cell(row, sidx["utm_campaign"])
+        umed = cell(row, sidx["utm_medium"])
+        usrc = cell(row, sidx["utm_source"])
+        real_camp = camp_map.get(norm(ucamp)) if ucamp else None
+        if real_camp:
+            # Lead atribuído ao Google Ads: herda campanha/grupo REAIS (mesma linha do gasto)
+            camp = real_camp
+            adset = group_map.get((norm(ucamp), slug(umed)), umed or "(sem grupo)")
+            ads = 1
         else:
-            camp = sale_camp
-            adset = cell(row, sidx["utm_medium"]) or "(sem conjunto)"
+            camp = ucamp or "(sem campanha)"
+            adset = umed or "(sem grupo)"
+            ads = 0
+        origem = usrc or cell(row, sidx["plat"]) or "Orgânico / direto"
         sales.append({
-            "d": parse_date(cell(row, sidx["created"])),
-            "camp": camp, "adset": adset, "ad": ad,
-            "prod": prod or "—",
-            "val": round(to_float(cell(row, sidx["val"])), 2),
-            "main": 1 if main else 0,
-            # meta=1 quando a venda casa com campanha+anúncio real do Meta (tráfego
-            # pago). Vendas do produto principal sem esse match (orgânico/direto, ou
-            # UTM sem anúncio identificável) têm meta=0.
-            "meta": 1 if meta_hit is not None else 0,
-            "nm": first_last_initial(cell(row, sidx["name"])),
-            "em": mask_email(cell(row, sidx["email"])),
+            "d": d, "camp": camp, "adset": adset,
+            "meta": ads,
+            "src": origem,
+            "st": cell(row, sidx["status"]) or "—",
+            "nm": first_last_initial(name),
         })
 
-    dates = sorted({d for d in ([m["d"] for m in meta if m["d"]] + [s["d"] for s in sales if s["d"]])})
+    dates = sorted({x["d"] for x in meta + sales if x["d"]})
     now_brt = datetime.now(BRT)
     return {
         "build": {
@@ -367,22 +323,16 @@ def process(meta_rows, sales_rows):
             "tax_factor": TAX_FACTOR,
             "client_name": CLIENT_NAME,
             "client_sub": CLIENT_SUB,
+            "platform": PLATFORM_NAME,
             "tax_label": TAX_LABEL,
-            "main_product": MAIN_PRODUCT,
-            "main_product_prefix": MAIN_PRODUCT_PREFIX,
             "ia_worker_url": IA_WORKER_URL,
-            # Metas da aba Relatórios (código de cor de CAC/ROAS)
-            "cac_target": CAC_TARGET,
-            "roas_target": ROAS_TARGET,
+            "cpl_target": CPL_TARGET,
+            "conv_target": CONV_TARGET,
             "report_band_low": REPORT_BAND_LOW,
             "report_band_high": REPORT_BAND_HIGH,
         },
         "meta": meta,
         "sales": sales,
-        "ad_links": ad_links,
-        # Briefings do Gestor por período (gerados por IA 1x/dia via Routine e
-        # salvos em build/relatorios.json). Preenchido em process()/main via
-        # load_briefings(); fica {} se o arquivo não existir.
         "briefings": {},
     }
 
@@ -433,8 +383,8 @@ def render(data, template_path):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--meta-file")
-    ap.add_argument("--sales-file")
+    ap.add_argument("--meta-file", help="CSV da aba Google Ads (teste local)")
+    ap.add_argument("--sales-file", help="CSV da aba Leads (teste local)")
     ap.add_argument("--template", default="build/template.html")
     ap.add_argument("--out", default="dist/index.html")
     args = ap.parse_args()
@@ -443,8 +393,10 @@ def main():
     sales_rows = load_rows(SALES_CSV_URL, args.sales_file)
     data = process(meta_rows, sales_rows)
 
-    # Briefings do Gestor (texto por IA, gerado 1x/dia pela Routine) — lidos do
-    # arquivo versionado ao lado do template. Sem chamada de API no build.
+    # Proteção: não publica uma dashboard vazia se a leitura da planilha falhar.
+    if not data["meta"]:
+        sys.exit("ERRO: nenhuma linha do Google Ads lida (aba/colunas/sigla do funil?). Build abortado.")
+
     briefings_path = os.path.join(os.path.dirname(os.path.abspath(args.template)), "relatorios.json")
     data["briefings"] = load_briefings(briefings_path)
 
@@ -453,12 +405,13 @@ def main():
         f.write(render(data, args.template))
 
     b = data["build"]
-    vendas = sum(s["main"] for s in data["sales"])
-    fat = sum(s["val"] for s in data["sales"])
+    leads = len(data["sales"])
+    leads_ads = sum(s["meta"] for s in data["sales"])
+    gasto = sum(m["sp"] for m in data["meta"])
     print("== build ok ==", file=sys.stderr)
     print(f"  periodo : {b['date_min']} -> {b['date_max']}", file=sys.stderr)
-    print(f"  meta    : {len(data['meta'])} linhas", file=sys.stderr)
-    print(f"  sales   : {len(data['sales'])} linhas (funil) · Vendas(principal): {vendas} · Fat: R$ {fat:,.2f}", file=sys.stderr)
+    print(f"  ads     : {len(data['meta'])} linhas · Gasto R$ {gasto:,.2f}", file=sys.stderr)
+    print(f"  leads   : {leads} total · {leads_ads} atribuídos ao {PLATFORM_NAME}", file=sys.stderr)
     print(f"  out     : {args.out}", file=sys.stderr)
 
 

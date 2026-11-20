@@ -1,0 +1,57 @@
+name: Build & Deploy Dashboard
+
+# Disparos:
+#  - push na main (ex.: commit que altera config/engine)
+#  - workflow_dispatch: chamado pelo cron-job.org a cada 30 min (só existe na branch padrão)
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Um deploy por vez; um disparo novo cancela o anterior em andamento.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build (lê as planilhas — somente leitura)
+        run: python build/build.py --out dist/index.html
+
+      - name: Cache-bust
+        run: |
+          BUILD_ID=$(grep -o '<meta name="build" content="[^"]*"' dist/index.html | sed 's/.*content="//;s/"//')
+          echo "build_id=$BUILD_ID"
+          echo "{\"build_id\":\"$BUILD_ID\"}" > dist/version.json
+          touch dist/.nojekyll
+
+      - uses: actions/configure-pages@v5
+        with:
+          enablement: true
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

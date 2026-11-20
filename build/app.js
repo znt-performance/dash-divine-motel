@@ -1,9 +1,12 @@
 "use strict";
+/* Dashboard de Controle de Tráfego Pago — funil de CAPTAÇÃO DE LEADS.
+   Anúncio → Página → Lead
+   META[]  = linhas da plataforma de mídia (dia × campanha × grupo): sp, im, cl
+   SALES[] = leads (1 linha = 1 lead); meta=1 quando atribuído à plataforma */
 const DATA = JSON.parse(document.getElementById('payload').textContent);
 const META = DATA.meta, SALES = DATA.sales, B = DATA.build;
 const TAX = B.tax_factor || 1;
-const MAIN_PRODUCT = B.main_product || 'Produto principal';
-const MAIN_PREFIX = B.main_product_prefix || '';
+const PLAT = B.platform || 'Google Ads';
 
 /* ---------------- format ---------------- */
 const nf0=new Intl.NumberFormat('pt-BR',{maximumFractionDigits:0});
@@ -13,11 +16,9 @@ const brl=v=>(v==null||!isFinite(v))?'-':'R$ '+nf2.format(v);
 const pct=v=>(v==null||!isFinite(v))?'-':nf2.format(v*100)+'%';
 const intf=v=>(v==null||!isFinite(v))?'-':nf0.format(v);
 const numf=v=>(v==null||!isFinite(v))?'-':nf1.format(v);
-const roasf=v=>(v==null||!isFinite(v))?'-':nf1.format(v)+'x';
 const dimf=v=>v==null?'-':String(v);
-/* remove acentos p/ casar com o norm() do build.py (unicodedata NFKD) */
-const norm=s=>(s==null?'':String(s)).normalize('NFKD').replace(/[\u0300-\u036f]/g,'').trim().toLowerCase();
-const isMainProd=p=>norm(p).startsWith(MAIN_PREFIX);
+const norm=s=>(s==null?'':String(s)).normalize('NFKD').replace(/[̀-ͯ]/g,'').trim().toLowerCase();
+const esc=s=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const brdate=d=>{ if(!d) return '-'; const p=d.split('-'); return p[2]+'/'+p[1]+'/'+p[0]; };
 const WD=['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
 const weekday=d=>{ const dt=new Date(d+'T00:00:00'); return isNaN(dt)?'':WD[dt.getDay()]; };
@@ -30,15 +31,14 @@ const TODAY = B.today || B.date_max;
 
 /* ---------------- STATE ---------------- */
 const STATE = {
-  page:'geral', from:B.date_min, to:B.date_max, preset:'todo', tax:true,
+  page:'geral', from:B.date_min, to:B.date_max, preset:'todo', tax:TAX!==1,
   selDays:new Set(),
-  mSelC:new Set(), mSelA:new Set(), mSelAd:new Set(),
+  mSelC:new Set(), mSelA:new Set(),
   sort:{}, colw: JSON.parse(localStorage.getItem('dm_colw')||'{}'),
   iaWin: localStorage.getItem('ia_win') || '14d',
 };
 const taxf = ()=> STATE.tax ? TAX : 1;
 
-/* active date test: selDays override the De/Até range */
 function dateActive(d){
   if(!d) return false;
   if(STATE.selDays.size) return STATE.selDays.has(d);
@@ -48,39 +48,30 @@ const metaActive  = ()=> META.filter(m=>dateActive(m.d));
 const salesActive = ()=> SALES.filter(s=>dateActive(s.d));
 
 /* ---------------- aggregation ----------------
-   bucket = {sp,im,cl,pv,ck, vendas, vendasM, fat}
-   vendas  = compras do produto principal (base de exibição da página)
-   vendasM = compras do produto principal atribuídas ao Meta Ads (base das conversões)
-   fat     = faturamento (todos os produtos do escopo)
-   Obs.: na aba Meta o conjunto de vendas já é filtrado a meta==1, então vendas==vendasM. */
-function newBucket(){return {sp:0,im:0,cl:0,pv:0,ck:0,vendas:0,vendasM:0,fat:0};}
-function addSales(a,r){ a.vendas+=r.main; a.vendasM+=(r.main&&r.meta)?1:0; a.fat+=r.val; }
+   bucket = {sp,im,cl, leads, leadsA}
+   leads  = leads do escopo (Visão Geral: todos; aba da plataforma: só atribuídos)
+   leadsA = leads atribuídos à plataforma (base de CPL e Tx Conversão) */
+function newBucket(){return {sp:0,im:0,cl:0,leads:0,leadsA:0};}
+function addLead(a,r){ a.leads+=1; a.leadsA+=r.meta?1:0; }
+function addAd(a,r){ a.sp+=r.sp; a.im+=r.im; a.cl+=r.cl; }
 function derive(a){
   const g=a.sp*taxf();
-  return {gasto:g, impr:a.im, cliques:a.cl, pv:a.pv, ck:a.ck, vendas:a.vendas, fat:a.fat,
+  return {gasto:g, impr:a.im, cliques:a.cl, leads:a.leads, leadsA:a.leadsA,
     cpm:a.im?g/a.im*1000:null, ctr:a.im?a.cl/a.im:null, cpc:a.cl?g/a.cl:null,
-    cpv:a.pv?g/a.pv:null, cr:a.cl?a.pv/a.cl:null,               /* CR = Page Views / Cliques */
-    cpic:a.ck?g/a.ck:null, vischk:a.pv?a.ck/a.pv:null,
-    convlp:a.pv?a.vendasM/a.pv:null,                            /* Vendas(Meta) / Page Views */
-    convchk:a.ck?a.vendasM/a.ck:null,                           /* Vendas(Meta) / Checkouts */
-    cac:a.vendas?g/a.vendas:null, roas:g?a.fat/g:null, ticket:a.vendas?a.fat/a.vendas:null};
+    cpl:a.leadsA?g/a.leadsA:null,                 /* CPL = Gasto / Leads (plataforma) */
+    conv:a.cl?a.leadsA/a.cl:null};                /* Tx Conversão = Leads / Cliques */
 }
 function buildAgg(fS,fM,dim){
   const m={}; const get=k=>m[k]||(m[k]=newBucket());
-  fM.forEach(r=>{const a=get(r[dim]); a.sp+=r.sp; a.im+=r.im; a.cl+=r.cl; a.pv+=r.pv; a.ck+=r.ck;});
-  fS.forEach(r=>{const a=get(r[dim]); addSales(a,r);});
+  fM.forEach(r=>addAd(get(r[dim]),r));
+  fS.forEach(r=>addLead(get(r[dim]),r));
   return m;
 }
-function totals(fS,fM){
-  const a=newBucket();
-  fM.forEach(r=>{a.sp+=r.sp;a.im+=r.im;a.cl+=r.cl;a.pv+=r.pv;a.ck+=r.ck;});
-  fS.forEach(r=>addSales(a,r));
-  return a;
-}
+function totals(fS,fM){ const a=newBucket(); fM.forEach(r=>addAd(a,r)); fS.forEach(r=>addLead(a,r)); return a; }
 function daily(fS,fM){
   const days={}; const g=d=>days[d]||(days[d]=Object.assign({d},newBucket()));
-  fM.forEach(r=>{if(!r.d)return; const a=g(r.d); a.sp+=r.sp; a.im+=r.im; a.cl+=r.cl; a.pv+=r.pv; a.ck+=r.ck;});
-  fS.forEach(r=>{if(!r.d)return; addSales(g(r.d),r);});
+  fM.forEach(r=>{if(r.d) addAd(g(r.d),r);});
+  fS.forEach(r=>{if(r.d) addLead(g(r.d),r);});
   return Object.values(days).sort((a,b)=>a.d<b.d?-1:1);
 }
 
@@ -102,7 +93,7 @@ function renderTable(cfg){
       return dir==='asc'?va-vb:vb-va; }); }
   const ext={};
   cfg.cols.forEach(c=>{ if(c.heat){ const vs=rows.map(r=>r.cells[c.key]).filter(v=>v!=null&&isFinite(v)); ext[c.key]=[Math.min(...vs),Math.max(...vs)]; }});
-  const fmt=(t,v)=> t==='brl'?brl(v):t==='pct'?pct(v):t==='int'?intf(v):t==='num'?numf(v):t==='roas'?roasf(v):t==='date'?brdate(v):dimf(v);
+  const fmt=(t,v)=> t==='brl'?brl(v):t==='pct'?pct(v):t==='int'?intf(v):t==='num'?numf(v):t==='date'?brdate(v):dimf(v);
   const widths=cfg.cols.map(c=>colWidth(cfg,c)); const totalW=widths.reduce((a,b)=>a+b,0);
   const colgroup='<colgroup>'+cfg.cols.map((c,i)=>`<col style="width:${widths[i]}px">`).join('')+'</colgroup>';
   let thead='<thead><tr>'+cfg.cols.map((c,i)=>{
@@ -154,7 +145,7 @@ function renderTable(cfg){
 }
 /* Heatmap por coluna: cor FIXA por métrica (definida em identidade-visual.css),
    só a OPACIDADE varia com o valor (maior valor = mais vibrante). */
-const HEAT_HUE={gasto:'--heat-gasto', fat:'--heat-fat', roas:'--heat-roas'};
+const HEAT_HUE={gasto:'--heat-gasto', leads:'--heat-fat', conv:'--heat-roas'};
 function heat(v,lo,hi,kind){
   if(v==null||!isFinite(v)||hi===lo||!HEAT_HUE[kind]) return 'transparent';
   const t=Math.max(0,Math.min(1,(v-lo)/(hi-lo)));
@@ -174,26 +165,25 @@ const chartPalette=()=>CHART_SERIES.map(v=>cvar(v)||'#888888');
 const hx2rgb=h=>{h=(h||'').replace('#','').trim();if(h.length===3)h=h.split('').map(c=>c+c).join('');const n=parseInt(h||'888888',16);return [(n>>16)&255,(n>>8)&255,n&255];};
 const cmuted=()=>cvar('--muted')||'#6B7280', cink=()=>cvar('--ink')||'#1A1D2E', cgrid=()=>cvar('--grid')||'#EEF0F5';
 function destroy(id){ if(charts[id]){ charts[id].destroy(); delete charts[id]; } }
-const FMT={brl:brl,pct:pct,num:numf,int:intf,roas:roasf};
+const FMT={brl:brl,pct:pct,num:numf,int:intf};
 
-/* combo: Vendas (barras) · Gasto/Faturamento (R$) · ROAS (eixo próprio) */
+/* combo: Leads (barras) · Gasto (R$) · CPL (eixo próprio) */
 function comboChart(id, d){
   destroy(id); const el=document.getElementById(id); if(!el) return;
   const labels=d.map(x=>x.d.slice(5)), mut=cmuted(), gr=cgrid();
   charts[id]=new Chart(el,{
     data:{labels, datasets:[
-      {type:'bar',label:'Vendas',data:d.map(x=>x.vendas),backgroundColor:cvar('--chart-vendas'),yAxisID:'y',borderRadius:3,order:3},
+      {type:'bar',label:'Leads',data:d.map(x=>x.leads),backgroundColor:cvar('--chart-vendas'),yAxisID:'y',borderRadius:3,order:3},
       {type:'line',label:'Gasto',data:d.map(x=>+(x.sp*taxf()).toFixed(2)),borderColor:cvar('--chart-gasto'),backgroundColor:cvar('--chart-gasto'),yAxisID:'y1',borderWidth:2,pointRadius:2,tension:.25,order:2},
-      {type:'line',label:'Faturamento',data:d.map(x=>+x.fat.toFixed(2)),borderColor:cvar('--chart-faturamento'),backgroundColor:cvar('--chart-faturamento'),yAxisID:'y1',borderWidth:2,pointRadius:2,tension:.25,order:2},
-      {type:'line',label:'ROAS',data:d.map(x=>{const g=x.sp*taxf();return g?+(x.fat/g).toFixed(2):null;}),borderColor:cink(),backgroundColor:cink(),yAxisID:'y2',borderWidth:2,pointRadius:2,spanGaps:true,tension:.25,order:0},
+      {type:'line',label:'CPL',data:d.map(x=>{const g=x.sp*taxf();return x.leadsA?+(g/x.leadsA).toFixed(2):null;}),borderColor:cink(),backgroundColor:cink(),yAxisID:'y2',borderWidth:2,pointRadius:2,spanGaps:true,tension:.25,order:0},
     ]},
     options:{responsive:true,maintainAspectRatio:false,interaction:{mode:'index',intersect:false},
       plugins:{legend:{labels:{color:cink(),boxWidth:10,usePointStyle:true,font:{size:11}}},
-        tooltip:{callbacks:{label:c=>{const v=c.raw,ax=c.dataset.yAxisID; return c.dataset.label+': '+(ax==='y1'?brl(v):ax==='y2'?roasf(v):intf(v));}}}},
+        tooltip:{callbacks:{label:c=>{const v=c.raw,ax=c.dataset.yAxisID; return c.dataset.label+': '+(ax==='y'?intf(v):brl(v));}}}},
       scales:{x:{ticks:{color:mut,font:{size:10}},grid:{display:false}},
-        y:{position:'left',ticks:{color:mut,font:{size:10}},grid:{color:gr},beginAtZero:true,title:{display:true,text:'Vendas',color:mut,font:{size:10}}},
-        y1:{position:'right',ticks:{color:mut,font:{size:10}},grid:{display:false},beginAtZero:true,title:{display:true,text:'R$',color:mut,font:{size:10}}},
-        y2:{position:'right',ticks:{color:mut,font:{size:10},callback:v=>numf(v)+'x'},grid:{display:false},beginAtZero:true,title:{display:true,text:'ROAS',color:mut,font:{size:10}}}}}
+        y:{position:'left',ticks:{color:mut,font:{size:10}},grid:{color:gr},beginAtZero:true,title:{display:true,text:'Leads',color:mut,font:{size:10}}},
+        y1:{position:'right',ticks:{color:mut,font:{size:10}},grid:{display:false},beginAtZero:true,title:{display:true,text:'Gasto R$',color:mut,font:{size:10}}},
+        y2:{position:'right',ticks:{color:mut,font:{size:10},callback:v=>brl(v)},grid:{display:false},beginAtZero:true,title:{display:true,text:'CPL',color:mut,font:{size:10}}}}}
   });
 }
 /* linhas genéricas (1 ou 2 eixos) */
@@ -227,20 +217,19 @@ function hbar(id, items, valFn, color, top, fmtFn){
       scales:{x:{beginAtZero:true,ticks:{color:mut,font:{size:9}},grid:{color:cgrid()}},
               y:{ticks:{color:mut,font:{size:9}},grid:{display:false}}}}});
 }
-/* CAC por dia, por item de uma dimensão (campanha/conjunto/anúncio) - 1 linha por item.
-   `dim` = 'camp' | 'adset' | 'ad'; usa os mesmos dados escopados da tabela acima. */
-function cacDimChart(id, fM, fS, dim){
+/* CPL por dia, por item de uma dimensão (campanha/grupo) — 1 linha por item */
+function cplDimChart(id, fM, fS, dim){
   destroy(id); const el=document.getElementById(id); if(!el) return;
   const spendTot={}; fM.forEach(r=>spendTot[r[dim]]=(spendTot[r[dim]]||0)+r.sp);
   const items=Object.keys(spendTot).sort((a,b)=>spendTot[b]-spendTot[a]).slice(0,6);
   const dset=new Set(); fM.forEach(r=>r.d&&dset.add(r.d)); fS.forEach(r=>r.d&&dset.add(r.d));
   const days=[...dset].sort();
-  const K=(c,dd)=>c+'\u0001'+dd, sp={}, vd={};
+  const K=(c,dd)=>c+'\u0001'+dd, sp={}, ld={};
   fM.forEach(r=>{if(!r.d)return; sp[K(r[dim],r.d)]=(sp[K(r[dim],r.d)]||0)+r.sp;});
-  fS.forEach(r=>{if(!r.d)return; vd[K(r[dim],r.d)]=(vd[K(r[dim],r.d)]||0)+r.main;});
+  fS.forEach(r=>{if(!r.d||!r.meta)return; ld[K(r[dim],r.d)]=(ld[K(r[dim],r.d)]||0)+1;});
   const PAL=chartPalette();
   const ds=items.map((c,i)=>({label:c.length>22?c.slice(0,22)+'…':c,
-    data:days.map(dd=>{const s=(sp[K(c,dd)]||0)*taxf(), v=vd[K(c,dd)]||0; return v?+(s/v).toFixed(2):null;}),
+    data:days.map(dd=>{const s=(sp[K(c,dd)]||0)*taxf(), v=ld[K(c,dd)]||0; return v?+(s/v).toFixed(2):null;}),
     borderColor:PAL[i%PAL.length],backgroundColor:PAL[i%PAL.length],borderWidth:2,pointRadius:1.5,spanGaps:true,tension:.25}));
   const mut=cmuted();
   charts[id]=new Chart(el,{type:'line',data:{labels:days.map(x=>x.slice(5)),datasets:ds},
@@ -249,45 +238,36 @@ function cacDimChart(id, fM, fS, dim){
       scales:{x:{ticks:{color:mut,font:{size:9},maxRotation:0,autoSkip:true,autoSkipPadding:8},grid:{display:false}},y:{ticks:{color:mut,font:{size:9},callback:v=>brl(v)},grid:{color:cgrid()},beginAtZero:true}}}});
 }
 
-/* ---------------- KPI cards ---------------- */
-function kpiCard(k){ return `<div class="kpi ${k.hero?'hero':''}"><div class="kl"><span>${k.label}</span>${k.pill?`<span class="pill q">${k.pill}</span>`:''}</div><div class="kv">${k.val}</div><div class="ka">${k.aux||''}</div></div>`; }
-
-/* ---------------- colunas das tabelas ---------------- */
+/* ---------------- colunas das tabelas (Gasto · CPM · Cliques · CPC · CTR · Leads · CPL · Tx Conversão) ---------------- */
 const METRIC_COLS=[
-  {key:'gasto',label:'Gasto',type:'brl',heat:'gasto'},   /* heatmap vermelho */
+  {key:'gasto',label:'Gasto',type:'brl',heat:'gasto'},
+  {key:'impr',label:'Impressões',type:'int'},
   {key:'cpm',label:'CPM',type:'brl'},
+  {key:'cliques',label:'Cliques',type:'int'},
+  {key:'cpc',label:'CPC',type:'brl'},
   {key:'ctr',label:'CTR',type:'pct'},
-  {key:'cr',label:'CR',type:'pct'},
-  {key:'vischk',label:'VisCHK',type:'pct'},
-  {key:'convchk',label:'ConvCHK',type:'pct'},
-  {key:'vendas',label:'Vendas',type:'int'},
-  {key:'cac',label:'CAC',type:'brl'},
-  {key:'fat',label:'Faturamento',type:'brl',heat:'fat'},  /* heatmap verde */
-  {key:'ticket',label:'Ticket',type:'brl'},
-  {key:'roas',label:'ROAS',type:'roas',heat:'roas'},      /* heatmap amarelo */
+  {key:'leads',label:'Leads',type:'int',heat:'leads'},
+  {key:'cpl',label:'CPL',type:'brl'},
+  {key:'conv',label:'Tx Conversão',type:'pct',heat:'conv',w:104},
 ];
 const DAILY_COLS=[{key:'date',label:'Data',type:'date'},{key:'wd',label:'Dia',type:'dim',w:64}].concat(METRIC_COLS);
 const HCOLS=[{key:'dim',label:'',type:'dim',big:true}].concat(METRIC_COLS.map(c=>{const o={...c}; delete o.heat; return o;}));
 function metricCells(x,d){
-  return {gasto:d.gasto, cpm:d.cpm, ctr:d.ctr, cr:d.cr, vischk:d.vischk, convchk:d.convchk,
-    vendas:x.vendas, cac:d.cac, fat:x.fat, ticket:d.ticket, roas:d.roas};
+  return {gasto:d.gasto, impr:x.im, cpm:d.cpm, cliques:x.cl, cpc:d.cpc, ctr:d.ctr, leads:x.leads, cpl:d.cpl, conv:d.conv};
 }
 function dailyCells(x,d,isTotal){
   return Object.assign({date:isTotal?null:x.d, wd:isTotal?'':weekday(x.d)}, metricCells(x,d));
 }
 
-/* ---------------- tabela Vendas por produto ---------------- */
-function renderProdTable(id, salesSet){
-  const mainCount=salesSet.reduce((s,r)=>s+r.main,0);
-  const byProd={}; salesSet.forEach(r=>{ if(isMainProd(r.prod)) return; byProd[r.prod]=(byProd[r.prod]||0)+1; });
-  const rows=[{k:'__main__', cells:{prod:MAIN_PRODUCT, vendas:mainCount, pctm:1}}];
-  Object.entries(byProd).sort((a,b)=>b[1]-a[1]).forEach(([prod,c])=>{
-    rows.push({k:prod, cells:{prod:prod, vendas:c, pctm:mainCount?c/mainCount:null}});
-  });
-  renderTable({id, cols:[{key:'prod',label:'Produto',type:'dim',big:true},{key:'vendas',label:'Vendas',type:'int',w:80},{key:'pctm',label:'% vs principal',type:'pct',w:120}], rows});
+/* ---------------- tabela Leads por origem ---------------- */
+function renderSrcTable(id, leadsSet){
+  const tot=leadsSet.length, by={};
+  leadsSet.forEach(r=>{ by[r.src]=(by[r.src]||0)+1; });
+  const rows=Object.entries(by).sort((a,b)=>b[1]-a[1]).map(([src,c])=>({k:src, cells:{src, leads:c, p:tot?c/tot:null}}));
+  renderTable({id, cols:[{key:'src',label:'Origem',type:'dim',big:true},{key:'leads',label:'Leads',type:'int',w:80},{key:'p',label:'% do total',type:'pct',w:110}], rows,
+    total:{src:null, leads:tot, p:tot?1:null}});
 }
 
-/* ---------------- funil + gráficos de conversão (comuns às 2 abas) ---------------- */
 /* ---- comparativo período atual vs período anterior de MESMO tamanho ---- */
 function prevWindow(){
   if(!STATE.from||!STATE.to) return null;
@@ -297,7 +277,7 @@ function prevWindow(){
 }
 const inRange=(d,a,b)=>d&&d>=a&&d<=b;
 /* métricas em que MENOR é melhor (custo); nas demais, maior é melhor */
-const GOOD_LOW={gasto:1,cpm:1,cpc:1,cpv:1,cpic:1,cac:1};
+const GOOD_LOW={gasto:1,cpm:1,cpc:1,cpl:1};
 function deltaBadge(cur,prev,key){
   if(cur==null||prev==null||!isFinite(cur)||!isFinite(prev)||prev===0) return '';
   const p=((cur-prev)/Math.abs(prev))*100; if(!isFinite(p)) return '';
@@ -309,7 +289,7 @@ function deltaBadge(cur,prev,key){
 function renderFunnel(id, steps){
   document.getElementById(id).innerHTML=steps.map(s=>{
     const color=s[4]?`var(${s[4]})`:'var(--accent-blue)';
-    const hi=(s[3]==='gasto'||s[3]==='fat');   // valores em destaque + contorno inteiro
+    const hi=(s[3]==='gasto'||s[3]==='leads');   // valores em destaque + contorno inteiro
     const border=hi?`border-color:${color}`:`border-left-color:${color}`;
     const secs=s[2].map(x=>`<div><span class="s-label">${x[0]}</span><span class="s-val${x[2]?' s-pill '+x[2]:''}">${x[1]}</span></div>`).join('');
     return `<div class="step" style="${border}">
@@ -324,51 +304,44 @@ function funnelSteps(t, tp){
   return [
     ['Gasto Total', brl(d.gasto), [], 'gasto', '--heat-gasto', deltaBadge(d.gasto, Pd?Pd.gasto:null, 'gasto')],
     ['Impressões', intf(t.im), [['CPM',brl(d.cpm)]], 'impr', '--c6', deltaBadge(t.im, P('im'), 'im')],
-    ['Cliques', intf(t.cl), [['CPC',brl(d.cpc)],['CTR',pct(d.ctr)]], 'cl', '--c1', deltaBadge(t.cl, P('cl'), 'cl')],
-    ['Page Views', intf(t.pv), [['CPV',brl(d.cpv)],['CR',pct(d.cr)]], 'pv', '--c4', deltaBadge(t.pv, P('pv'), 'pv')],
-    ['Checkouts', intf(t.ck), [['CPIC',brl(d.cpic)],['VisCHK',pct(d.vischk)]], 'ck', '--c3', deltaBadge(t.ck, P('ck'), 'ck')],
-    ['Vendas', intf(t.vendas), [['CAC',brl(d.cac),'cac'],['ConvCHK',pct(d.convchk)]], 'vendas', '--c7', deltaBadge(t.vendas, P('vendas'), 'vendas')],
-    ['Faturamento', brl(t.fat), [['ROAS',roasf(d.roas),'roas'],['Ticket Médio',brl(d.ticket)]], 'fat', '--heat-fat', deltaBadge(t.fat, P('fat'), 'fat')],
+    ['Cliques (Página)', intf(t.cl), [['CPC',brl(d.cpc)],['CTR',pct(d.ctr)]], 'cl', '--c1', deltaBadge(t.cl, P('cl'), 'cl')],
+    ['Leads', intf(t.leads), [['CPL',brl(d.cpl),'cac'],['Tx Conversão',pct(d.conv)]], 'leads', '--heat-fat', deltaBadge(t.leads, P('leads'), 'leads')],
   ];
 }
 function convCharts(id1,id2,id3,dd){
   multiLine(id1, dd, [{label:'CPM',fn:x=>x.im?+((x.sp*taxf())/x.im*1000).toFixed(2):null,color:cvar('--chart-cpm'),fmt:'brl',axis:'L'},
      {label:'CTR',fn:x=>x.im?+(x.cl/x.im).toFixed(4):null,color:cvar('--chart-ctr'),fmt:'pct',axis:'R'}], {L:{fmt:'brl'},R:{fmt:'pct'}});
-  multiLine(id2, dd, [{label:'CR',fn:x=>x.cl?+(x.pv/x.cl).toFixed(4):null,color:cvar('--chart-cr'),fmt:'pct',axis:'L'},
-     {label:'VisCHK',fn:x=>x.pv?+(x.ck/x.pv).toFixed(4):null,color:cvar('--chart-vischk'),fmt:'pct',axis:'L'}], {L:{fmt:'pct'}});
-  multiLine(id3, dd, [{label:'ConvLP',fn:x=>x.pv?+(x.vendasM/x.pv).toFixed(4):null,color:cvar('--chart-convlp'),fmt:'pct',axis:'L'},
-     {label:'ConvCHK',fn:x=>x.ck?+(x.vendasM/x.ck).toFixed(4):null,color:cvar('--chart-vischk'),fmt:'pct',axis:'L'}], {L:{fmt:'pct'}});
+  multiLine(id2, dd, [{label:'CPC',fn:x=>x.cl?+((x.sp*taxf())/x.cl).toFixed(2):null,color:cvar('--chart-cr'),fmt:'brl',axis:'L'},
+     {label:'CPL',fn:x=>x.leadsA?+((x.sp*taxf())/x.leadsA).toFixed(2):null,color:cvar('--chart-gasto'),fmt:'brl',axis:'L'}], {L:{fmt:'brl'}});
+  multiLine(id3, dd, [{label:'Tx Conversão',fn:x=>x.cl?+(x.leadsA/x.cl).toFixed(4):null,color:cvar('--chart-convlp'),fmt:'pct',axis:'L'}], {L:{fmt:'pct'}});
 }
+const dayTable=(id,dd,t)=>renderTable({id, cols:DAILY_COLS,
+    rows:dd.slice().reverse().map(x=>({k:x.d, cells:dailyCells(x,derive(x))})),
+    total:dailyCells(t,derive(t),true),
+    selectable:true, selSet:STATE.selDays,
+    onSelect:(k,e)=>{ toggleSet(STATE.selDays,k,e&&(e.ctrlKey||e.metaKey)); syncDateInputs(); renderAll(); }});
 
 /* ---------------- PAGE 1: Visão Geral ---------------- */
 function renderGeral(){
-  const fM=metaActive(), fS=salesActive();          // fS = todas as vendas do funil
-  const t=totals(fS,fM), d=derive(t);
+  const fM=metaActive(), fS=salesActive();
+  const t=totals(fS,fM);
   const pw=prevWindow();
   const tp = pw ? totals(SALES.filter(s=>inRange(s.d,pw.from,pw.to)), META.filter(m=>inRange(m.d,pw.from,pw.to))) : null;
   renderFunnel('geralFunnel', funnelSteps(t, tp));
   const dd=daily(fS,fM);
-  convCharts('gCpmCtr','gCrVis','gConv', dd);
+  convCharts('gCpmCtr','gCpcCpl','gConv', dd);
   comboChart('gCombo', dd);
-  renderProdTable('gProd', fS);
-
-  const dl=dd.slice().reverse();
-  renderTable({id:'gDaily', cols:DAILY_COLS,
-    rows:dl.map(x=>{const dv=derive(x); return {k:x.d, cells:dailyCells(x,dv)};}),
-    total:dailyCells(t,d,true),
-    selectable:true, selSet:STATE.selDays,
-    onSelect:(k,e)=>{ toggleSet(STATE.selDays,k,e&&(e.ctrlKey||e.metaKey)); syncDateInputs(); renderAll(); },
-  });
+  renderSrcTable('gSrc', fS);
+  dayTable('gDaily', dd, t);
 }
 
-/* ---------------- PAGE 2: Meta Ads ---------------- */
-function metaScope(ex){ let fM=metaActive(), fS=salesActive().filter(s=>s.meta);   // só Meta Ads
+/* ---------------- PAGE 2: plataforma (Google Ads) ---------------- */
+function metaScope(ex){ let fM=metaActive(), fS=salesActive().filter(s=>s.meta);
   if(ex!=='C'&&STATE.mSelC.size){ fM=fM.filter(r=>STATE.mSelC.has(r.camp)); fS=fS.filter(r=>STATE.mSelC.has(r.camp)); }
   if(ex!=='A'&&STATE.mSelA.size){ fM=fM.filter(r=>STATE.mSelA.has(r.adset)); fS=fS.filter(r=>STATE.mSelA.has(r.adset)); }
-  if(ex!=='D'&&STATE.mSelAd.size){ fM=fM.filter(r=>STATE.mSelAd.has(r.ad)); fS=fS.filter(r=>STATE.mSelAd.has(r.ad)); }
   return {fM,fS}; }
 function selDim(dim,key,ctrl){
-  const sets={C:STATE.mSelC,A:STATE.mSelA,D:STATE.mSelAd}, s=sets[dim];
+  const sets={C:STATE.mSelC,A:STATE.mSelA}, s=sets[dim];
   if(ctrl){ s.has(key)?s.delete(key):s.add(key); }
   else { const sole=s.has(key)&&s.size===1&&!Object.entries(sets).some(([k2,x])=>k2!==dim&&x.size);
     Object.values(sets).forEach(x=>x.clear()); if(!sole) s.add(key); }
@@ -379,68 +352,48 @@ function metaPrevTotals(pw){
   let fS=SALES.filter(s=>s.meta && inRange(s.d,pw.from,pw.to));
   if(STATE.mSelC.size){fM=fM.filter(r=>STATE.mSelC.has(r.camp));fS=fS.filter(r=>STATE.mSelC.has(r.camp));}
   if(STATE.mSelA.size){fM=fM.filter(r=>STATE.mSelA.has(r.adset));fS=fS.filter(r=>STATE.mSelA.has(r.adset));}
-  if(STATE.mSelAd.size){fM=fM.filter(r=>STATE.mSelAd.has(r.ad));fS=fS.filter(r=>STATE.mSelAd.has(r.ad));}
   return totals(fS,fM);
 }
 function renderMeta(){
   const F=metaScope(null), fM=F.fM, fS=F.fS;
-  const t=totals(fS,fM), d=derive(t);
+  const t=totals(fS,fM);
   const pw=prevWindow(); const tp = pw ? metaPrevTotals(pw) : null;
   renderFunnel('metaFunnel', funnelSteps(t, tp));
-
   const dd=daily(fS,fM);
-  convCharts('mCpmCtr','mCrVis','mConv', dd);
+  convCharts('mCpmCtr','mCpcCpl','mConv', dd);
   comboChart('mCombo', dd);
-  const aggAd=buildAgg(fS,fM,'ad');
-  hbar('mContent', Object.entries(aggAd).map(([label,a])=>({label,v:a.fat})), x=>x.v, cvar('--chart-faturamento'), 10, brl);
-  renderProdTable('mProd', fS);
+  const aggG=buildAgg(fS,[], 'adset');
+  hbar('mGroup', Object.entries(aggG).map(([label,a])=>({label,v:a.leads})), x=>x.v, cvar('--chart-faturamento'), 10, intf);
+  dayTable('tDaily', dd, t);
 
-  const dl=dd.slice().reverse();
-  renderTable({id:'tDaily', cols:DAILY_COLS,
-    rows:dl.map(x=>{const dv=derive(x); return {k:x.d, cells:dailyCells(x,dv)};}),
-    total:dailyCells(t,d,true),
-    selectable:true, selSet:STATE.selDays,
-    onSelect:(k,e)=>{ toggleSet(STATE.selDays,k,e&&(e.ctrlKey||e.metaKey)); syncDateInputs(); renderAll(); },
-  });
-
-  function hierRows(map){ return Object.entries(map).map(([k,a])=>{const dv=derive(a);
-    return {k, cells:Object.assign({dim:k}, metricCells(a,dv))};}); }
-  function totRowOf(tt){const dv=derive(tt);return Object.assign({dim:null}, metricCells(tt,dv));}
-  const Sc=metaScope('C'), Sa=metaScope('A'), Sd=metaScope('D');
+  function hierRows(map){ return Object.entries(map).map(([k,a])=>({k, cells:Object.assign({dim:k}, metricCells(a,derive(a)))})); }
+  function totRowOf(tt){ return Object.assign({dim:null}, metricCells(tt,derive(tt))); }
+  const Sc=metaScope('C'), Sa=metaScope('A');
   renderTable({id:'tCamp', cols:HCOLS.map((c,i)=>i===0?{...c,label:'Campanha'}:c), rows:hierRows(buildAgg(Sc.fS,Sc.fM,'camp')), total:totRowOf(totals(Sc.fS,Sc.fM)),
     selectable:true, selSet:STATE.mSelC, onSelect:(k,e)=>selDim('C',k,e&&(e.ctrlKey||e.metaKey))});
-  renderTable({id:'tAdset', cols:HCOLS.map((c,i)=>i===0?{...c,label:'Conjunto',big:true}:c), rows:hierRows(buildAgg(Sa.fS,Sa.fM,'adset')), total:totRowOf(totals(Sa.fS,Sa.fM)),
+  renderTable({id:'tAdset', cols:HCOLS.map((c,i)=>i===0?{...c,label:'Grupo de anúncios'}:c), rows:hierRows(buildAgg(Sa.fS,Sa.fM,'adset')), total:totRowOf(totals(Sa.fS,Sa.fM)),
     selectable:true, selSet:STATE.mSelA, onSelect:(k,e)=>selDim('A',k,e&&(e.ctrlKey||e.metaKey))});
-  renderTable({id:'tAd', cols:HCOLS.map((c,i)=>i===0?{...c,label:'Anúncio'}:c), rows:hierRows(buildAgg(Sd.fS,Sd.fM,'ad')), total:totRowOf(totals(Sd.fS,Sd.fM)),
-    selectable:true, selSet:STATE.mSelAd, onSelect:(k,e)=>selDim('D',k,e&&(e.ctrlKey||e.metaKey))});
+  cplDimChart('chCamp', Sc.fM, Sc.fS, 'camp');
+  cplDimChart('chAdset', Sa.fM, Sa.fS, 'adset');
 
-  /* cada gráfico segue a dimensão da tabela acima (mesmos dados escopados) */
-  cacDimChart('chCamp', Sc.fM, Sc.fS, 'camp');
-  cacDimChart('chAdset', Sa.fM, Sa.fS, 'adset');
-  cacDimChart('chAd', Sd.fM, Sd.fS, 'ad');
-
-  const vendas=fS.reduce((s,r)=>s+r.main,0);
-  document.getElementById('qCount').textContent=vendas+' vendas · '+fS.length+' linhas';
+  document.getElementById('qCount').textContent=fS.length+' leads';
   const rows=fS.slice().sort((a,b)=>(a.d<b.d?1:-1));
   renderTable({id:'tQual',
-    cols:[{key:'d',label:'Data',type:'date'},{key:'nm',label:'Nome',type:'dim'},{key:'prod',label:'Produto',type:'dim',big:true},
-      {key:'val',label:'Valor',type:'brl',w:110},{key:'camp',label:'Campanha',type:'dim',big:true},{key:'ad',label:'Anúncio',type:'dim',big:true},{key:'em',label:'E‑mail',type:'dim',w:200}],
-    rows:rows.map((s,i)=>({k:'s'+i, cells:{d:s.d,nm:s.nm,prod:s.prod,val:s.val,camp:s.camp,ad:s.ad,em:s.em}}))});
+    cols:[{key:'d',label:'Data',type:'date'},{key:'nm',label:'Nome',type:'dim'},{key:'camp',label:'Campanha',type:'dim',big:true},
+      {key:'adset',label:'Grupo de anúncios',type:'dim',w:200},{key:'st',label:'Status',type:'dim',w:110}],
+    rows:rows.map((s,i)=>({k:'s'+i, cells:{d:s.d,nm:s.nm,camp:s.camp,adset:s.adset,st:s.st}}))});
 }
 
 /* ---------------- PAGE: Relatórios ----------------
-   Reaproveita os mesmos dados/filtros das outras abas (metaActive/salesActive).
-   Total  = todas as vendas do funil.  Tráfego = só Meta Ads (s.meta).
-   Código de cor aplicado APENAS a CAC e ROAS (metas em build.py). */
-const CAC_TARGET=B.cac_target, ROAS_TARGET=B.roas_target;
+   Total = todos os leads · Tráfego = só leads atribuídos à plataforma.
+   Código de cor em CPL e Tx Conversão (metas em build/config.py; 0 = sem cor). */
+const CPL_TARGET=B.cpl_target, CONV_TARGET=B.conv_target;
 const REL_BAND_LO=(B.report_band_low!=null?B.report_band_low:0.7);
 const REL_BAND_HI=(B.report_band_high!=null?B.report_band_high:1.3);
-const AD_LINKS=DATA.ad_links||{};
-/* desempenho vs meta: CAC menor=melhor (meta/valor); ROAS maior=melhor (valor/meta) */
 function relPerf(v,kind){
   if(v==null||!isFinite(v)) return null;
-  if(kind==='roas'){ return ROAS_TARGET?v/ROAS_TARGET:null; }
-  return (CAC_TARGET&&v>0)?CAC_TARGET/v:null;
+  if(kind==='conv') return CONV_TARGET?v/CONV_TARGET:null;
+  return (CPL_TARGET&&v>0)?CPL_TARGET/v:null;
 }
 function relColor(v,kind){ const p=relPerf(v,kind); if(p==null) return '';
   if(p<REL_BAND_LO) return 'rc-red'; if(p<1) return 'rc-yellow';
@@ -449,11 +402,11 @@ function relCard(label,val,hero){ return `<div class="rel-card${hero?' hero':''}
 function relCards(id,t){ const d=derive(t);
   document.getElementById(id).innerHTML=[
     relCard('Valor Gasto',brl(d.gasto)),
-    relCard('Vendas',intf(t.vendas)),
-    relCard('Faturamento',brl(t.fat)),
-    relCard('CAC',`<span class="${relColor(d.cac,'cac')}">${brl(d.cac)}</span>`),
-    relCard('Ticket Médio',brl(d.ticket)),
-    relCard('ROAS',`<span class="${relColor(d.roas,'roas')}">${roasf(d.roas)}</span>`,true),
+    relCard('Cliques',intf(t.cl)),
+    relCard('Leads',intf(t.leads)),
+    relCard('CPL',`<span class="${relColor(d.cpl,'cpl')}">${brl(d.cpl)}</span>`,true),
+    relCard('CPC',brl(d.cpc)),
+    relCard('Tx Conversão',`<span class="${relColor(d.conv,'conv')}">${pct(d.conv)}</span>`),
   ].join('');
 }
 /* tabela estática simples (cols/rows/foot = [{v,cls}]) — mantém a estética .dt */
@@ -465,15 +418,13 @@ function relRenderTable(id,cols,rows,foot){
   const tf=foot?('<tfoot><tr>'+foot.map(c=>`<td class="${c.cls||''}">${c.v}</td>`).join('')+'</tr></tfoot>'):'';
   el.innerHTML=th+tb+tf;
 }
-function adLink(name){ const u=AD_LINKS[name];
-  return u?`<a class="rel-adlink" href="${esc(u)}" target="_blank" rel="noopener">Abrir ▸</a>`:'<span class="rel-adlink off">—</span>'; }
 function relBriefKey(){ if(STATE.selDays.size) return null; return STATE.preset||null; }
 function renderRelBrief(){
   const wrap=document.getElementById('relBrief'), stampEl=document.getElementById('relBriefStamp');
   const bf=DATA.briefings||{}, per=bf.periodos||{}, key=relBriefKey();
   stampEl.textContent = bf.generated_at ? `Briefing gerado por IA · última atualização ${bf.generated_at} · atualiza 1×/dia às 23h59` : '';
   if(!Object.keys(per).length){
-    wrap.innerHTML='<div class="rel-brief-empty">O briefing por IA ainda não foi gerado. Ele é atualizado automaticamente 1×/dia às 23h59.</div>'; return; }
+    wrap.innerHTML='<div class="rel-brief-empty">Briefing do Gestor ainda não configurado para este funil (opcional — ver build/GUIA-RELATORIOS.md).</div>'; return; }
   if(!key || !per[key]){
     wrap.innerHTML='<div class="rel-brief-empty">Briefing disponível para os períodos predefinidos (Hoje, Ontem, 3&nbsp;dias, 7&nbsp;dias, 14&nbsp;dias, 30&nbsp;dias, Este mês, Mês passado, Todo período). Selecione um desses botões no topo.</div>'; return; }
   const item=per[key];
@@ -484,7 +435,6 @@ function renderRelatorios(){
   const tTot=totals(fSall,fM), tAds=totals(fSads,fM);
   const dvT=derive(tTot), dvA=derive(tAds);
 
-  /* cabeçalho do período */
   const pr=PRESETS.find(p=>p[0]===STATE.preset);
   document.getElementById('relPeriodName').textContent = STATE.selDays.size?'Dias selecionados':(pr?pr[1]:'Personalizado');
   let rangeTxt='';
@@ -492,63 +442,48 @@ function renderRelatorios(){
     rangeTxt=`${brdate(STATE.from)} a ${brdate(STATE.to)}`+(nD>0?` · ${nD} dia${nD>1?'s':''}`:''); }
   document.getElementById('relPeriodRange').textContent=rangeTxt;
 
-  /* cards */
   relCards('relCardsTotal',tTot);
   relCards('relCardsAds',tAds);
 
-  /* tabela diária resumida (Total | Ads) */
   const ddTot=daily(fSall,fM), ddAds={}; daily(fSads,fM).forEach(x=>ddAds[x.d]=x);
-  const dcols=[{label:'Data'},{label:'Dia',cls:'dim'},{label:'Gasto'},{label:'Vendas Totais'},{label:'CAC Total'},{label:'ROAS Total'},
-    {label:'Vendas Ads',cls:'sep-col'},{label:'CAC Ads'},{label:'ROAS Ads'}];
+  const dcols=[{label:'Data'},{label:'Dia',cls:'dim'},{label:'Gasto'},{label:'Cliques'},{label:'Leads Totais'},
+    {label:'Leads Ads',cls:'sep-col'},{label:'CPL Ads'},{label:'Tx Conv. Ads'}];
   const drows=ddTot.slice().reverse().map(x=>{ const dv=derive(x), a=ddAds[x.d], da=a?derive(a):null;
-    const cacA=da?da.cac:null, roasA=da?da.roas:null;
-    return [{v:brdate(x.d),cls:'dim'},{v:weekday(x.d),cls:'dim'},{v:brl(dv.gasto)},{v:intf(x.vendas)},
-      {v:brl(dv.cac),cls:relColor(dv.cac,'cac')},{v:roasf(dv.roas),cls:relColor(dv.roas,'roas')},
-      {v:intf(a?a.vendas:0),cls:'sep-col'},{v:brl(cacA),cls:relColor(cacA,'cac')},{v:roasf(roasA),cls:relColor(roasA,'roas')}]; });
-  const dfoot=[{v:'Total',cls:'dim'},{v:'',cls:'dim'},{v:brl(dvT.gasto)},{v:intf(tTot.vendas)},
-    {v:brl(dvT.cac),cls:relColor(dvT.cac,'cac')},{v:roasf(dvT.roas),cls:relColor(dvT.roas,'roas')},
-    {v:intf(tAds.vendas),cls:'sep-col'},{v:brl(dvA.cac),cls:relColor(dvA.cac,'cac')},{v:roasf(dvA.roas),cls:relColor(dvA.roas,'roas')}];
+    const cpl=da?da.cpl:null, conv=da?da.conv:null;
+    return [{v:brdate(x.d),cls:'dim'},{v:weekday(x.d),cls:'dim'},{v:brl(dv.gasto)},{v:intf(x.cl)},{v:intf(x.leads)},
+      {v:intf(a?a.leads:0),cls:'sep-col'},{v:brl(cpl),cls:relColor(cpl,'cpl')},{v:pct(conv),cls:relColor(conv,'conv')}]; });
+  const dfoot=[{v:'Total',cls:'dim'},{v:'',cls:'dim'},{v:brl(dvT.gasto)},{v:intf(tTot.cl)},{v:intf(tTot.leads)},
+    {v:intf(tAds.leads),cls:'sep-col'},{v:brl(dvA.cpl),cls:relColor(dvA.cpl,'cpl')},{v:pct(dvA.conv),cls:relColor(dvA.conv,'conv')}];
   relRenderTable('relDaily',dcols,drows,dfoot);
 
-  /* visão por campanha (só Meta Ads) */
+  const rowOf=(name,ag)=>{ const d=derive(ag);
+    return [{v:esc(name),cls:'dim'},{v:brl(d.gasto)},{v:brl(d.cpm)},{v:intf(ag.cl)},{v:brl(d.cpc)},{v:pct(d.ctr)},
+      {v:intf(ag.leads)},{v:brl(d.cpl),cls:relColor(d.cpl,'cpl')},{v:pct(d.conv),cls:relColor(d.conv,'conv')}]; };
+  const hcols=lbl=>[{label:lbl,cls:'dim'},{label:'Gasto'},{label:'CPM'},{label:'Cliques'},{label:'CPC'},{label:'CTR'},{label:'Leads'},{label:'CPL'},{label:'Tx Conv.'}];
   const aggC=buildAgg(fSads,fM,'camp');
-  const crows=Object.entries(aggC).sort((a,b)=>b[1].sp-a[1].sp).map(([name,ag])=>{ const d=derive(ag);
-    return [{v:esc(name),cls:'dim'},{v:brl(d.gasto)},{v:intf(ag.vendas)},
-      {v:roasf(d.roas),cls:relColor(d.roas,'roas')},{v:brl(d.cac),cls:relColor(d.cac,'cac')},
-      {v:brl(d.cpm)},{v:pct(d.ctr)},{v:pct(d.cr)},{v:pct(d.vischk)},{v:pct(d.convchk)}]; });
-  relRenderTable('relCamp',
-    [{label:'Campanha',cls:'dim'},{label:'Gasto'},{label:'Venda'},{label:'ROAS'},{label:'CAC'},{label:'CPM'},{label:'CTR'},{label:'CR'},{label:'VisCHK'},{label:'ConvCHK'}],
-    crows,
-    [{v:'Total',cls:'dim'},{v:brl(dvA.gasto)},{v:intf(tAds.vendas)},{v:roasf(dvA.roas),cls:relColor(dvA.roas,'roas')},{v:brl(dvA.cac),cls:relColor(dvA.cac,'cac')},
-     {v:brl(dvA.cpm)},{v:pct(dvA.ctr)},{v:pct(dvA.cr)},{v:pct(dvA.vischk)},{v:pct(dvA.convchk)}]);
+  relRenderTable('relCamp', hcols('Campanha'),
+    Object.entries(aggC).sort((a,b)=>b[1].sp-a[1].sp).map(([n,ag])=>rowOf(n,ag)),
+    rowOf('Total',tAds).map((c,i)=>i===0?{v:'Total',cls:'dim'}:c));
 
-  /* top / piores anúncios (só Meta Ads, com gasto no período) */
-  const aggAd=buildAgg(fSads,fM,'ad');
-  const ads=Object.entries(aggAd).filter(([n,ag])=>ag.sp>0).map(([name,ag])=>{ const d=derive(ag);
-    return {name,gasto:d.gasto,vendas:ag.vendas,cac:d.cac,roas:d.roas}; });
-  ads.sort((a,b)=>{ const ra=a.roas==null?-1:a.roas, rb=b.roas==null?-1:b.roas; if(rb!==ra) return rb-ra;
-    const ca=a.cac==null?Infinity:a.cac, cb=b.cac==null?Infinity:b.cac; return ca-cb; });
-  const top=ads.slice(0,5), topSet=new Set(top.map(a=>a.name));
-  const worst=ads.filter(a=>!topSet.has(a.name)).slice(-5).reverse();
-  const adCols=[{label:'Anúncio',cls:'dim'},{label:'Gasto'},{label:'Vendas'},{label:'CAC'},{label:'ROAS'},{label:'Link',cls:'dim'}];
-  const adRows=list=>list.map(a=>[{v:esc(a.name),cls:'dim'},{v:brl(a.gasto)},{v:intf(a.vendas)},
-    {v:brl(a.cac),cls:relColor(a.cac,'cac')},{v:roasf(a.roas),cls:relColor(a.roas,'roas')},{v:adLink(a.name),cls:'dim'}]);
-  relRenderTable('relTop',adCols,adRows(top));
-  relRenderTable('relWorst',adCols,adRows(worst));
+  const aggG=buildAgg(fSads,fM,'adset');
+  const grs=Object.entries(aggG).filter(([n,ag])=>ag.sp>0).map(([name,ag])=>({name,ag,d:derive(ag)}));
+  grs.sort((a,b)=>{ const ca=a.d.cpl==null?Infinity:a.d.cpl, cb=b.d.cpl==null?Infinity:b.d.cpl; if(ca!==cb) return ca-cb;
+    return (b.d.conv||0)-(a.d.conv||0); });
+  const k=Math.min(5,Math.ceil(grs.length/2));
+  const top=grs.slice(0,k), topSet=new Set(top.map(a=>a.name));
+  const worst=grs.filter(a=>!topSet.has(a.name)).slice(-5).reverse();
+  relRenderTable('relTop',hcols('Grupo'),top.map(g=>rowOf(g.name,g.ag)));
+  relRenderTable('relWorst',hcols('Grupo'),worst.map(g=>rowOf(g.name,g.ag)));
 
-  /* briefing do gestor (texto pré-gerado por IA) */
   renderRelBrief();
 }
 
 /* ---------------- PAGE 3: IA Insights ---------------- */
 const r2=v=>(v==null||!isFinite(v))?null:Math.round(v*100)/100;
 const r4=v=>(v==null||!isFinite(v))?null:Math.round(v*10000)/10000;
-const esc=s=>String(s==null?'':s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
 function iaMetricRow(x,d){
   return {gasto:r2(d.gasto),impressoes:x.im,cpm:r2(d.cpm),cliques:x.cl,cpc:r2(d.cpc),ctr:r4(d.ctr),
-    page_views:x.pv,cpv:r2(d.cpv),cr:r4(d.cr),checkouts:x.ck,cpic:r2(d.cpic),vischk:r4(d.vischk),
-    convlp:r4(d.convlp),vendas:x.vendas,cac:r2(d.cac),convchk:r4(d.convchk),
-    faturamento:r2(x.fat),roas:r2(d.roas),ticket:r2(d.ticket)};
+    leads:x.leads,leads_plataforma:x.leadsA,cpl:r2(d.cpl),tx_conversao:r4(d.conv)};
 }
 /* janela própria da IA — independente do filtro de período das outras abas */
 const IA_WINDOWS=[['3d',3,'3 dias'],['7d',7,'7 dias'],['14d',14,'14 dias'],['30d',30,'30 dias']];
@@ -560,68 +495,22 @@ function iaRenderWin(){
     STATE.iaWin=c.dataset.w; localStorage.setItem('ia_win',STATE.iaWin); iaRenderWin();
   }));
 }
-function iaSumBuckets(arr){ const a=newBucket(); arr.forEach(x=>{a.sp+=x.sp;a.im+=x.im;a.cl+=x.cl;a.pv+=x.pv;a.ck+=x.ck;a.vendas+=x.vendas;a.vendasM+=x.vendasM;a.fat+=x.fat;}); return a; }
-function iaPctDelta(a,b){ return (a==null||b==null||!isFinite(a)||!isFinite(b)||b===0)?null:+(((a-b)/b)*100).toFixed(1); }
-function iaCmp(dR,dP,k){ return {recente:r2(dR[k]), anterior:r2(dP[k]), variacao_pct:iaPctDelta(dR[k],dP[k])}; }
 function iaBuildData(){
   const winDays=iaWinDays(), from=addDays(TODAY,-(winDays-1)), to=TODAY;
   const inWin=d=>d && d>=from && d<=to;
-  const fM=META.filter(m=>inWin(m.d)), fSall=SALES.filter(s=>inWin(s.d)), fSmeta=fSall.filter(s=>s.meta);
-  const t=totals(fSall,fM), tm=totals(fSmeta,fM);
-  const byProd={}; fSmeta.forEach(s=>{byProd[s.prod]=(byProd[s.prod]||0)+1;});
-
-  /* --- séries diárias e janelas de tendência (escopo Meta) --- */
-  const dd=daily(fSmeta,fM);                              // buckets diários (asc)
-  const serie=dd.slice(-90).map(x=>{const dv=derive(x); return {d:x.d, gasto:r2(dv.gasto), cpm:r2(dv.cpm),
-    ctr:r4(dv.ctr), cr:r4(dv.cr), vischk:r4(dv.vischk), convchk:r4(dv.convchk),
-    vendas:x.vendas, cac:r2(dv.cac), fat:r2(x.fat), roas:r2(dv.roas)};});
-  const days=dd.map(x=>x.d), n=days.length, half=Math.max(1,Math.floor(n/2));
-  let comparativo=null, recentSet=null, prevSet=null;
-  if(n>=2){
-    recentSet=new Set(days.slice(n-half));
-    prevSet=new Set(days.slice(Math.max(0,n-2*half), n-half));
-    const R=iaSumBuckets(dd.filter(x=>recentSet.has(x.d))), P=iaSumBuckets(dd.filter(x=>prevSet.has(x.d)));
-    const dR=derive(R), dP=derive(P);
-    comparativo={
-      dias_por_janela:half,
-      janela_recente:{de:days[n-half], ate:days[n-1]},
-      janela_anterior:prevSet.size?{de:days[Math.max(0,n-2*half)], ate:days[n-half-1]}:null,
-      cpm:iaCmp(dR,dP,'cpm'), ctr:iaCmp(dR,dP,'ctr'), cr:iaCmp(dR,dP,'cr'),
-      vischk:iaCmp(dR,dP,'vischk'), convchk:iaCmp(dR,dP,'convchk'),
-      cac:iaCmp(dR,dP,'cac'), roas:iaCmp(dR,dP,'roas'), gasto:iaCmp(dR,dP,'gasto'),
-      vendas:{recente:R.vendas, anterior:P.vendas, variacao_pct:iaPctDelta(R.vendas,P.vendas)},
-    };
-  }
-  /* top estruturas + tendência recente vs anterior */
-  function topTrend(dim,lim){
-    const map=buildAgg(fSmeta,fM,dim);
-    const aggR = recentSet ? buildAgg(fSmeta.filter(r=>recentSet.has(r.d)), fM.filter(r=>recentSet.has(r.d)), dim) : {};
-    const aggP = prevSet   ? buildAgg(fSmeta.filter(r=>prevSet.has(r.d)),   fM.filter(r=>prevSet.has(r.d)),   dim) : {};
-    return Object.entries(map).sort((a,b)=>b[1].sp-a[1].sp).slice(0,lim).map(([nome,a])=>{
-      const row=Object.assign({nome}, iaMetricRow(a,derive(a)));
-      if(comparativo){
-        const dvR=aggR[nome]?derive(aggR[nome]):null, dvP=aggP[nome]?derive(aggP[nome]):null;
-        row.tendencia={
-          cac_recente:dvR?r2(dvR.cac):null, cac_anterior:dvP?r2(dvP.cac):null,
-          roas_recente:dvR?r2(dvR.roas):null, roas_anterior:dvP?r2(dvP.roas):null,
-          gasto_recente:dvR?r2(dvR.gasto):null, gasto_anterior:dvP?r2(dvP.gasto):null };
-      }
-      return row;
-    });
-  }
-
+  const fM=META.filter(m=>inWin(m.d)), fSall=SALES.filter(s=>inWin(s.d)), fSads=fSall.filter(s=>s.meta);
+  const t=totals(fSall,fM), ta=totals(fSads,fM);
+  const top=(dim,lim)=>Object.entries(buildAgg(fSads,fM,dim)).sort((a,b)=>b[1].sp-a[1].sp).slice(0,lim)
+    .map(([nome,a])=>Object.assign({nome}, iaMetricRow(a,derive(a))));
   return {
-    periodo:{de:from,ate:to,janela_ia:STATE.iaWin,dias_no_periodo:n},
-    imposto_meta_aplicado: STATE.tax,
-    obs:"Taxas em fração 0-1. cr=PageViews/Cliques; vischk=Checkouts/PageViews; convlp=Vendas/PageViews; convchk=Vendas/Checkouts. total_todas_vendas inclui vendas orgânicas; conversões e estruturas consideram apenas Meta Ads. Produto principal = "+MAIN_PRODUCT+". comparativo_periodo compara a janela recente vs a anterior (mesmo nº de dias) — use para detectar SATURAÇÃO/fadiga (ex.: CPM subindo + CTR/ROAS caindo). serie_diaria = evolução dia a dia. variacao_pct = variação % recente vs anterior. Cada estrutura traz 'tendencia' (recente vs anterior).",
-    total_todas_vendas: iaMetricRow(t,derive(t)),
-    total_meta_ads: iaMetricRow(tm,derive(tm)),
-    comparativo_periodo: comparativo,
-    serie_diaria: serie,
-    campanhas: topTrend('camp',10),
-    conjuntos: topTrend('adset',10),
-    anuncios: topTrend('ad',15),
-    vendas_por_produto: Object.entries(byProd).sort((a,b)=>b[1]-a[1]).slice(0,10).map(([produto,vendas])=>({produto,vendas})),
+    periodo:{de:from,ate:to,janela_ia:STATE.iaWin},
+    funil:"Captação de leads: Anúncio ("+PLAT+") → Página → Lead. Sem vendas/faturamento.",
+    obs:"Taxas em fração 0-1. tx_conversao = Leads/Cliques; cpl = Gasto/Leads atribuídos à plataforma. total_todos_leads inclui orgânico/direto.",
+    total_todos_leads: iaMetricRow(t,derive(t)),
+    total_plataforma: iaMetricRow(ta,derive(ta)),
+    serie_diaria: daily(fSads,fM).map(x=>Object.assign({d:x.d}, iaMetricRow(x,derive(x)))),
+    campanhas: top('camp',10),
+    grupos_de_anuncios: top('adset',15),
   };
 }
 function iaBackendUrl(){ return iaNormUrl(localStorage.getItem('ia_backend')||B.ia_worker_url||''); }
@@ -776,37 +665,32 @@ function ppApply(){
 }
 
 /* ---------------- navigation & boot ---------------- */
-function setPage(p){ STATE.page=p;
+const HAS_IA = !!B.ia_worker_url;
+function setPage(p){ if(p==='ia'&&!HAS_IA) p='geral'; STATE.page=p;
   document.querySelectorAll('.nav-item').forEach(n=>n.classList.toggle('active',n.dataset.page===p));
-  document.getElementById('page-geral').classList.toggle('active',p==='geral');
-  document.getElementById('page-meta').classList.toggle('active',p==='meta');
-  document.getElementById('page-rel').classList.toggle('active',p==='rel');
-  document.getElementById('page-ia').classList.toggle('active',p==='ia');
-  document.getElementById('ptitle').textContent = p==='meta'?'Meta Ads':(p==='rel'?'Relatórios':(p==='ia'?'IA Insights':'Visão Geral'));
+  ['geral','meta','rel','ia'].forEach(id=>document.getElementById('page-'+id).classList.toggle('active',p===id));
+  document.getElementById('ptitle').textContent = p==='meta'?PLAT:(p==='rel'?'Relatórios':(p==='ia'?'IA Insights':'Visão Geral'));
   document.getElementById('navToggle').checked=false;
   history.replaceState(null,'', '#'+p);
   renderAll();
 }
 function renderAll(){ if(STATE.page==='meta') renderMeta(); else if(STATE.page==='rel') renderRelatorios(); else if(STATE.page==='ia') renderIA(); else renderGeral(); }
 
-/* Tema ESCURO é o padrão; só fica claro se o usuário tiver escolhido 'light'. */
 function applyTheme(){ const t=localStorage.getItem('dm_theme'); if(t==='light') document.documentElement.removeAttribute('data-theme'); else document.documentElement.setAttribute('data-theme','dark'); }
 applyTheme();
 document.getElementById('themeBtn').addEventListener('click',()=>{ const dark=document.documentElement.getAttribute('data-theme')==='dark'; localStorage.setItem('dm_theme',dark?'light':'dark'); applyTheme(); renderAll(); });
 
 document.querySelectorAll('.nav-item').forEach(n=>n.addEventListener('click',()=>setPage(n.dataset.page)));
 document.getElementById('taxToggle').addEventListener('click',function(){ STATE.tax=!STATE.tax; this.classList.toggle('on',STATE.tax); renderAll(); });
-/* seletor de período: abre/fecha popover, aplicar/cancelar, fechar ao clicar fora/Esc */
 document.getElementById('periodBtn').addEventListener('click',e=>{ e.stopPropagation(); ppIsOpen()?ppClose():ppOpen(); });
 document.getElementById('ppApply').addEventListener('click',ppApply);
 document.getElementById('ppCancel').addEventListener('click',ppClose);
 document.getElementById('periodPop').addEventListener('click',e=>e.stopPropagation());
 document.addEventListener('click',()=>{ if(ppIsOpen()) ppClose(); });
 document.addEventListener('keydown',e=>{ if(e.key==='Escape'&&ppIsOpen()) ppClose(); });
-document.getElementById('clearBtn').addEventListener('click',()=>{ STATE.mSelC.clear();STATE.mSelA.clear();STATE.mSelAd.clear();STATE.selDays.clear(); applyPreset('mes'); });
+document.getElementById('clearBtn').addEventListener('click',()=>{ STATE.mSelC.clear();STATE.mSelA.clear();STATE.selDays.clear(); applyPreset('todo'); });
 document.getElementById('refreshBtn').addEventListener('click',function(){ this.classList.add('loading'); goRefresh(); });
 
-/* IA Insights config + geração */
 document.getElementById('iaCfgBtn').addEventListener('click',()=>{ const c=document.getElementById('iaConfig');
   c.style.display = c.style.display==='none'?'block':'none';
   document.getElementById('iaUrl').value=localStorage.getItem('ia_backend')||'';
@@ -822,17 +706,17 @@ document.getElementById('iaGen').addEventListener('click',iaGenerate);
 document.title=(B.client_sub?B.client_sub+' · ':'')+(B.client_name||'Dashboard');
 document.getElementById('logoMain').textContent=B.client_name||'—';
 document.getElementById('logoSub').textContent=B.client_sub||'';
+document.getElementById('navPlat').textContent=PLAT;
+document.querySelectorAll('.platName').forEach(el=>el.textContent=PLAT);
 document.getElementById('taxLabel').textContent=B.tax_label||'Imposto';
-document.getElementById('mainProdNote').textContent=MAIN_PRODUCT;
-document.getElementById('mainProdNoteG').textContent=MAIN_PRODUCT;
-document.getElementById('mainProdNoteProdG').textContent=MAIN_PRODUCT;
-document.getElementById('mainProdNoteProdM').textContent=MAIN_PRODUCT;
+if(TAX===1) document.getElementById('taxToggle').style.display='none';
+if(!HAS_IA) document.getElementById('navIa').style.display='none';
 document.getElementById('updated').innerHTML='Última atualização:<br>'+B.generated_at_brt+' (BRT)';
 document.getElementById('buildFoot').textContent='build __BUILD_ID__';
 document.getElementById('buildFoot2').textContent='· build __BUILD_ID__';
 
 syncDateInputs(); iaStatusText();
-document.getElementById('taxToggle').classList.toggle('on', STATE.tax);  /* imposto Meta ON por padrão */
+document.getElementById('taxToggle').classList.toggle('on', STATE.tax);
 setPage(location.hash==='#meta'?'meta':(location.hash==='#rel'?'rel':(location.hash==='#ia'?'ia':'geral')));
 
 /* ---------------- Aviso de nova versão (sem recarregar por cima do usuário) ----------------
