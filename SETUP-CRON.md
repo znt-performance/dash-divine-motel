@@ -1,7 +1,7 @@
 # Ativação + configuração do cron-job.org
 
-> owner/repo: `vitorfrazato/dash-divine-motel` · URL do Pages:
-> `https://vitorfrazato.github.io/dash-divine-motel/` (mesmos valores de `config.js`).
+> owner/repo: `znt-performance/dash-divine-motel` · URL do Pages:
+> `https://znt-performance.github.io/dash-divine-motel/` (mesmos valores de `config.js`).
 > O **token nunca é comitado** no repositório: ele vai apenas no cron-job.org.
 
 ## Passo 1 — Branch `main`
@@ -14,7 +14,7 @@ Pages: **Settings → Pages → Source: GitHub Actions** (o workflow tenta ligar
 sozinho com `configure-pages` + `enablement: true`; se falhar com
 `Resource not accessible by integration`, ligue uma vez na mão e re-execute).
 
-URL pública: `https://vitorfrazato.github.io/dash-divine-motel/`
+URL pública: `https://znt-performance.github.io/dash-divine-motel/`
 
 ## Passo 2 — Token (fine-grained)
 
@@ -28,7 +28,7 @@ Guarde o token; ele vai só no cron-job.org (no lugar de `TOKEN_AQUI`).
 
 ### URL
 ```
-https://api.github.com/repos/vitorfrazato/dash-divine-motel/actions/workflows/deploy.yml/dispatches
+https://api.github.com/repos/znt-performance/dash-divine-motel/actions/workflows/deploy.yml/dispatches
 ```
 ### Método
 ```

@@ -7,7 +7,7 @@
 // de SETUP-CRON.md, README.md, CLAUDE.md e AGENTS.md (já preenchidos).
 window.CONFIG = {
   // Usuário ou organização dona do repositório no GitHub.
-  GITHUB_USERNAME: "vitorfrazato",
+  GITHUB_USERNAME: "znt-performance",
 
   // Nome do repositório do cliente no GitHub.
   GITHUB_REPOSITORY: "dash-divine-motel",

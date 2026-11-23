@@ -1,6 +1,6 @@
 # Dashboard de Controle de Tráfego Pago — Divine Motel / Captação de Leads
 
-Publicado em https://vitorfrazato.github.io/dash-divine-motel/
+Publicado em https://znt-performance.github.io/dash-divine-motel/
 
 ## Visão geral
 

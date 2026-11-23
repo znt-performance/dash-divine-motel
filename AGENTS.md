@@ -5,7 +5,7 @@
 ## Projeto
 
 - **Cliente/funil:** Divine Motel — Captação de Leads (sigla `DM`)
-- **URL pública:** `https://vitorfrazato.github.io/dash-divine-motel/`
+- **URL pública:** `https://znt-performance.github.io/dash-divine-motel/`
 - **Tipo de funil:** captação de leads — `Anúncio (Google Ads) → Página → Lead`
   (Gasto · CPM · Cliques · CPC · CTR · Leads · CPL · Tx Conversão)
 

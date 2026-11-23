@@ -18,7 +18,7 @@ Dashboard de **Controle de Tráfego Pago** — BI estático (HTML/CSS/JS + Chart
 via CDN) no **GitHub Pages**, cruzando **Google Ads** com a lista de **Leads**.
 Atualiza a cada ~30 min (GitHub Actions disparado pelo cron-job.org).
 
-- **URL pública:** `https://vitorfrazato.github.io/dash-divine-motel/`
+- **URL pública:** `https://znt-performance.github.io/dash-divine-motel/`
 - **Cliente/projeto:** Divine Motel — Captação de Leads
 - **Sigla do funil:** `DM` (`FUNNEL_PREFIX = "DM_"`)
 
