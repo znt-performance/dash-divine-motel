@@ -1,12 +1,14 @@
 "use strict";
-/* Dashboard de Controle de Tráfego Pago — funil de CAPTAÇÃO DE LEADS.
-   Anúncio → Página → Lead
-   META[]  = linhas da plataforma de mídia (dia × campanha × grupo): sp, im, cl
-   SALES[] = leads (1 linha = 1 lead); meta=1 quando atribuído à plataforma */
+/* Dashboard de Controle de Tráfego Pago — funil de CAPTAÇÃO DE LEADS (Google + Meta).
+   ADS[]   = linhas de mídia: p='g' Google (dia × campanha × grupo) ou
+             p='m' Meta (dia × campanha × conjunto × anúncio); sp, im, cl, cv
+             (cv = conversas iniciadas no Meta = leads do Meta)
+   LEADS[] = leads da planilha (1 linha = 1 lead); p='g' quando atribuído ao Google */
 const DATA = JSON.parse(document.getElementById('payload').textContent);
-const META = DATA.meta, SALES = DATA.sales, B = DATA.build;
-const TAX = B.tax_factor || 1;
-const PLAT = B.platform || 'Google Ads';
+const ADS = DATA.ads, LEADS = DATA.leads, B = DATA.build;
+const AD_LINKS = DATA.ad_links || {};
+const TAX = B.meta_tax_factor || 1;   /* imposto só sobre o gasto do Meta */
+const PLAT_NAME = {g:'Google Ads', m:'Meta Ads'};
 
 /* ---------------- format ---------------- */
 const nf0=new Intl.NumberFormat('pt-BR',{maximumFractionDigits:0});
@@ -16,7 +18,7 @@ const brl=v=>(v==null||!isFinite(v))?'-':'R$ '+nf2.format(v);
 const pct=v=>(v==null||!isFinite(v))?'-':nf2.format(v*100)+'%';
 const intf=v=>(v==null||!isFinite(v))?'-':nf0.format(v);
 const numf=v=>(v==null||!isFinite(v))?'-':nf1.format(v);
-const dimf=v=>v==null?'-':String(v);
+const dimf=v=>v==null?'-':esc(v);
 const norm=s=>(s==null?'':String(s)).normalize('NFKD').replace(/[̀-ͯ]/g,'').trim().toLowerCase();
 const esc=s=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const brdate=d=>{ if(!d) return '-'; const p=d.split('-'); return p[2]+'/'+p[1]+'/'+p[0]; };
@@ -33,29 +35,30 @@ const TODAY = B.today || B.date_max;
 const STATE = {
   page:'geral', from:B.date_min, to:B.date_max, preset:'todo', tax:TAX!==1,
   selDays:new Set(),
-  mSelC:new Set(), mSelA:new Set(),
+  sel:{g:{C:new Set(),A:new Set(),D:new Set()}, m:{C:new Set(),A:new Set(),D:new Set()}},
   sort:{}, colw: JSON.parse(localStorage.getItem('dm_colw')||'{}'),
   iaWin: localStorage.getItem('ia_win') || '14d',
 };
-const taxf = ()=> STATE.tax ? TAX : 1;
+/* gasto de uma linha de mídia, já com imposto do Meta (se o toggle estiver ligado) */
+const spOf = r => r.sp * (r.p==='m' && STATE.tax ? TAX : 1);
 
 function dateActive(d){
   if(!d) return false;
   if(STATE.selDays.size) return STATE.selDays.has(d);
   return (!STATE.from || d>=STATE.from) && (!STATE.to || d<=STATE.to);
 }
-const metaActive  = ()=> META.filter(m=>dateActive(m.d));
-const salesActive = ()=> SALES.filter(s=>dateActive(s.d));
+const adsActive   = ()=> ADS.filter(m=>dateActive(m.d));
+const leadsActive = ()=> LEADS.filter(s=>dateActive(s.d));
 
 /* ---------------- aggregation ----------------
    bucket = {sp,im,cl, leads, leadsA}
-   leads  = leads do escopo (Visão Geral: todos; aba da plataforma: só atribuídos)
-   leadsA = leads atribuídos à plataforma (base de CPL e Tx Conversão) */
+   leads  = leads do escopo (planilha de Leads + conversas do Meta)
+   leadsA = leads de mídia paga (Google atribuído + conversas Meta) — base de CPL e Tx Conversão */
 function newBucket(){return {sp:0,im:0,cl:0,leads:0,leadsA:0};}
-function addLead(a,r){ a.leads+=1; a.leadsA+=r.meta?1:0; }
-function addAd(a,r){ a.sp+=r.sp; a.im+=r.im; a.cl+=r.cl; }
+function addLead(a,r){ a.leads+=1; a.leadsA+=r.p?1:0; }
+function addAd(a,r){ a.sp+=spOf(r); a.im+=r.im; a.cl+=r.cl; if(r.cv){ a.leads+=r.cv; a.leadsA+=r.cv; } }
 function derive(a){
-  const g=a.sp*taxf();
+  const g=a.sp;   /* a.sp já vem com imposto do Meta (addAd/spOf) */
   return {gasto:g, impr:a.im, cliques:a.cl, leads:a.leads, leadsA:a.leadsA,
     cpm:a.im?g/a.im*1000:null, ctr:a.im?a.cl/a.im:null, cpc:a.cl?g/a.cl:null,
     cpl:a.leadsA?g/a.leadsA:null,                 /* CPL = Gasto / Leads (plataforma) */
@@ -93,7 +96,7 @@ function renderTable(cfg){
       return dir==='asc'?va-vb:vb-va; }); }
   const ext={};
   cfg.cols.forEach(c=>{ if(c.heat){ const vs=rows.map(r=>r.cells[c.key]).filter(v=>v!=null&&isFinite(v)); ext[c.key]=[Math.min(...vs),Math.max(...vs)]; }});
-  const fmt=(t,v)=> t==='brl'?brl(v):t==='pct'?pct(v):t==='int'?intf(v):t==='num'?numf(v):t==='date'?brdate(v):dimf(v);
+  const fmt=(t,v)=> t==='link'?(v&&/^https?:\/\//.test(v)?`<a class="rel-adlink" href="${esc(v)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">Abrir ▸</a>`:'—'):t==='brl'?brl(v):t==='pct'?pct(v):t==='int'?intf(v):t==='num'?numf(v):t==='date'?brdate(v):dimf(v);
   const widths=cfg.cols.map(c=>colWidth(cfg,c)); const totalW=widths.reduce((a,b)=>a+b,0);
   const colgroup='<colgroup>'+cfg.cols.map((c,i)=>`<col style="width:${widths[i]}px">`).join('')+'</colgroup>';
   let thead='<thead><tr>'+cfg.cols.map((c,i)=>{
@@ -174,8 +177,8 @@ function comboChart(id, d){
   charts[id]=new Chart(el,{
     data:{labels, datasets:[
       {type:'bar',label:'Leads',data:d.map(x=>x.leads),backgroundColor:cvar('--chart-vendas'),yAxisID:'y',borderRadius:3,order:3},
-      {type:'line',label:'Gasto',data:d.map(x=>+(x.sp*taxf()).toFixed(2)),borderColor:cvar('--chart-gasto'),backgroundColor:cvar('--chart-gasto'),yAxisID:'y1',borderWidth:2,pointRadius:2,tension:.25,order:2},
-      {type:'line',label:'CPL',data:d.map(x=>{const g=x.sp*taxf();return x.leadsA?+(g/x.leadsA).toFixed(2):null;}),borderColor:cink(),backgroundColor:cink(),yAxisID:'y2',borderWidth:2,pointRadius:2,spanGaps:true,tension:.25,order:0},
+      {type:'line',label:'Gasto',data:d.map(x=>+x.sp.toFixed(2)),borderColor:cvar('--chart-gasto'),backgroundColor:cvar('--chart-gasto'),yAxisID:'y1',borderWidth:2,pointRadius:2,tension:.25,order:2},
+      {type:'line',label:'CPL',data:d.map(x=>{const g=x.sp;return x.leadsA?+(g/x.leadsA).toFixed(2):null;}),borderColor:cink(),backgroundColor:cink(),yAxisID:'y2',borderWidth:2,pointRadius:2,spanGaps:true,tension:.25,order:0},
     ]},
     options:{responsive:true,maintainAspectRatio:false,interaction:{mode:'index',intersect:false},
       plugins:{legend:{labels:{color:cink(),boxWidth:10,usePointStyle:true,font:{size:11}}},
@@ -225,11 +228,12 @@ function cplDimChart(id, fM, fS, dim){
   const dset=new Set(); fM.forEach(r=>r.d&&dset.add(r.d)); fS.forEach(r=>r.d&&dset.add(r.d));
   const days=[...dset].sort();
   const K=(c,dd)=>c+'\u0001'+dd, sp={}, ld={};
-  fM.forEach(r=>{if(!r.d)return; sp[K(r[dim],r.d)]=(sp[K(r[dim],r.d)]||0)+r.sp;});
-  fS.forEach(r=>{if(!r.d||!r.meta)return; ld[K(r[dim],r.d)]=(ld[K(r[dim],r.d)]||0)+1;});
+  fM.forEach(r=>{if(!r.d)return; sp[K(r[dim],r.d)]=(sp[K(r[dim],r.d)]||0)+spOf(r);});
+  fS.forEach(r=>{if(!r.d||!r.p)return; ld[K(r[dim],r.d)]=(ld[K(r[dim],r.d)]||0)+1;});
+  fM.forEach(r=>{if(!r.d||!r.cv)return; ld[K(r[dim],r.d)]=(ld[K(r[dim],r.d)]||0)+r.cv;});
   const PAL=chartPalette();
   const ds=items.map((c,i)=>({label:c.length>22?c.slice(0,22)+'…':c,
-    data:days.map(dd=>{const s=(sp[K(c,dd)]||0)*taxf(), v=ld[K(c,dd)]||0; return v?+(s/v).toFixed(2):null;}),
+    data:days.map(dd=>{const s=(sp[K(c,dd)]||0), v=ld[K(c,dd)]||0; return v?+(s/v).toFixed(2):null;}),
     borderColor:PAL[i%PAL.length],backgroundColor:PAL[i%PAL.length],borderWidth:2,pointRadius:1.5,spanGaps:true,tension:.25}));
   const mut=cmuted();
   charts[id]=new Chart(el,{type:'line',data:{labels:days.map(x=>x.slice(5)),datasets:ds},
@@ -259,13 +263,18 @@ function dailyCells(x,d,isTotal){
   return Object.assign({date:isTotal?null:x.d, wd:isTotal?'':weekday(x.d)}, metricCells(x,d));
 }
 
-/* ---------------- tabela Leads por origem ---------------- */
-function renderSrcTable(id, leadsSet){
-  const tot=leadsSet.length, by={};
-  leadsSet.forEach(r=>{ by[r.src]=(by[r.src]||0)+1; });
-  const rows=Object.entries(by).sort((a,b)=>b[1]-a[1]).map(([src,c])=>({k:src, cells:{src, leads:c, p:tot?c/tot:null}}));
-  renderTable({id, cols:[{key:'src',label:'Origem',type:'dim',big:true},{key:'leads',label:'Leads',type:'int',w:80},{key:'p',label:'% do total',type:'pct',w:110}], rows,
-    total:{src:null, leads:tot, p:tot?1:null}});
+/* ---------------- tabela Por plataforma (Visão Geral) ---------------- */
+function renderPlatTable(id, fM, fS){
+  const rows=[];
+  [['g','Google Ads'],['m','Meta Ads']].forEach(([p,label])=>{
+    const a=totals(fS.filter(r=>r.p===p), fM.filter(r=>r.p===p));
+    if(a.sp||a.im||a.leads) rows.push({k:p, cells:Object.assign({dim:label}, metricCells(a,derive(a)))});
+  });
+  const org=fS.filter(r=>!r.p);
+  if(org.length){ const a=totals(org,[]); rows.push({k:'o', cells:Object.assign({dim:'Orgânico / outros'}, metricCells(a,derive(a)))}); }
+  const t=totals(fS,fM);
+  renderTable({id, cols:HCOLS.map((c,i)=>i===0?{...c,label:'Plataforma',big:false,w:180}:c), rows,
+    total:Object.assign({dim:null}, metricCells(t,derive(t)))});
 }
 
 /* ---- comparativo período atual vs período anterior de MESMO tamanho ---- */
@@ -299,20 +308,21 @@ function renderFunnel(id, steps){
       <div class="secs">${secs}</div></div>`;
   }).join('');
 }
-function funnelSteps(t, tp){
+function funnelSteps(t, tp, L){
+  L=L||{};
   const d=derive(t), P=(k)=>tp?tp[k]:null, Pd=tp?derive(tp):null;
   return [
     ['Gasto Total', brl(d.gasto), [], 'gasto', '--heat-gasto', deltaBadge(d.gasto, Pd?Pd.gasto:null, 'gasto')],
     ['Impressões', intf(t.im), [['CPM',brl(d.cpm)]], 'impr', '--c6', deltaBadge(t.im, P('im'), 'im')],
-    ['Cliques (Página)', intf(t.cl), [['CPC',brl(d.cpc)],['CTR',pct(d.ctr)]], 'cl', '--c1', deltaBadge(t.cl, P('cl'), 'cl')],
-    ['Leads', intf(t.leads), [['CPL',brl(d.cpl),'cac'],['Tx Conversão',pct(d.conv)]], 'leads', '--heat-fat', deltaBadge(t.leads, P('leads'), 'leads')],
+    [L.clicks||'Cliques', intf(t.cl), [['CPC',brl(d.cpc)],['CTR',pct(d.ctr)]], 'cl', '--c1', deltaBadge(t.cl, P('cl'), 'cl')],
+    [L.leads||'Leads', intf(t.leads), [[L.cpl||'CPL',brl(d.cpl),'cac'],['Tx Conversão',pct(d.conv)]], 'leads', '--heat-fat', deltaBadge(t.leads, P('leads'), 'leads')],
   ];
 }
 function convCharts(id1,id2,id3,dd){
-  multiLine(id1, dd, [{label:'CPM',fn:x=>x.im?+((x.sp*taxf())/x.im*1000).toFixed(2):null,color:cvar('--chart-cpm'),fmt:'brl',axis:'L'},
+  multiLine(id1, dd, [{label:'CPM',fn:x=>x.im?+(x.sp/x.im*1000).toFixed(2):null,color:cvar('--chart-cpm'),fmt:'brl',axis:'L'},
      {label:'CTR',fn:x=>x.im?+(x.cl/x.im).toFixed(4):null,color:cvar('--chart-ctr'),fmt:'pct',axis:'R'}], {L:{fmt:'brl'},R:{fmt:'pct'}});
-  multiLine(id2, dd, [{label:'CPC',fn:x=>x.cl?+((x.sp*taxf())/x.cl).toFixed(2):null,color:cvar('--chart-cr'),fmt:'brl',axis:'L'},
-     {label:'CPL',fn:x=>x.leadsA?+((x.sp*taxf())/x.leadsA).toFixed(2):null,color:cvar('--chart-gasto'),fmt:'brl',axis:'L'}], {L:{fmt:'brl'}});
+  multiLine(id2, dd, [{label:'CPC',fn:x=>x.cl?+(x.sp/x.cl).toFixed(2):null,color:cvar('--chart-cr'),fmt:'brl',axis:'L'},
+     {label:'CPL',fn:x=>x.leadsA?+(x.sp/x.leadsA).toFixed(2):null,color:cvar('--chart-gasto'),fmt:'brl',axis:'L'}], {L:{fmt:'brl'}});
   multiLine(id3, dd, [{label:'Tx Conversão',fn:x=>x.cl?+(x.leadsA/x.cl).toFixed(4):null,color:cvar('--chart-convlp'),fmt:'pct',axis:'L'}], {L:{fmt:'pct'}});
 }
 const dayTable=(id,dd,t)=>renderTable({id, cols:DAILY_COLS,
@@ -321,71 +331,86 @@ const dayTable=(id,dd,t)=>renderTable({id, cols:DAILY_COLS,
     selectable:true, selSet:STATE.selDays,
     onSelect:(k,e)=>{ toggleSet(STATE.selDays,k,e&&(e.ctrlKey||e.metaKey)); syncDateInputs(); renderAll(); }});
 
-/* ---------------- PAGE 1: Visão Geral ---------------- */
+/* ---------------- PAGE 1: Visão Geral (Google + Meta) ---------------- */
 function renderGeral(){
-  const fM=metaActive(), fS=salesActive();
+  const fM=adsActive(), fS=leadsActive();
   const t=totals(fS,fM);
   const pw=prevWindow();
-  const tp = pw ? totals(SALES.filter(s=>inRange(s.d,pw.from,pw.to)), META.filter(m=>inRange(m.d,pw.from,pw.to))) : null;
+  const tp = pw ? totals(LEADS.filter(s=>inRange(s.d,pw.from,pw.to)), ADS.filter(m=>inRange(m.d,pw.from,pw.to))) : null;
   renderFunnel('geralFunnel', funnelSteps(t, tp));
   const dd=daily(fS,fM);
   convCharts('gCpmCtr','gCpcCpl','gConv', dd);
   comboChart('gCombo', dd);
-  renderSrcTable('gSrc', fS);
+  renderPlatTable('gPlat', fM, fS);
   dayTable('gDaily', dd, t);
 }
 
-/* ---------------- PAGE 2: plataforma (Google Ads) ---------------- */
-function metaScope(ex){ let fM=metaActive(), fS=salesActive().filter(s=>s.meta);
-  if(ex!=='C'&&STATE.mSelC.size){ fM=fM.filter(r=>STATE.mSelC.has(r.camp)); fS=fS.filter(r=>STATE.mSelC.has(r.camp)); }
-  if(ex!=='A'&&STATE.mSelA.size){ fM=fM.filter(r=>STATE.mSelA.has(r.adset)); fS=fS.filter(r=>STATE.mSelA.has(r.adset)); }
-  return {fM,fS}; }
-function selDim(dim,key,ctrl){
-  const sets={C:STATE.mSelC,A:STATE.mSelA}, s=sets[dim];
+/* ---------------- PÁGINAS DE PLATAFORMA (Google Ads / Meta Ads) ----------------
+   Mesmo renderizador; cada plataforma tem sua config (ids, níveis, rótulos). */
+const PLATFORMS={
+  g:{funnel:'metaFunnel', combo:'mCombo', daily:'tDaily', cpmctr:'mCpmCtr', cpccpl:'mCpcCpl', conv:'mConv',
+     bar:'mGroup', barDim:'adset',
+     levels:[['C','camp','Campanha','tCamp','chCamp'],['A','adset','Grupo de anúncios','tAdset','chAdset']],
+     leadsTable:'tQual', L:{clicks:'Cliques (Página)', leads:'Leads'}},
+  m:{funnel:'fbFunnel', combo:'fbCombo', daily:'fbDaily', cpmctr:'fbCpmCtr', cpccpl:'fbCpcCpl', conv:'fbConv',
+     bar:'fbAdBar', barDim:'ad',
+     levels:[['C','camp','Campanha','fbCamp','fbChCamp'],['A','adset','Conjunto','fbAdset','fbChAdset'],['D','ad','Anúncio','fbAd','fbChAd']],
+     L:{clicks:'Cliques no link', leads:'Conversas (Leads)', cpl:'Custo/Conversa'}},
+};
+function platScope(p, ex){
+  let fM=adsActive().filter(r=>r.p===p), fS=leadsActive().filter(r=>r.p===p);
+  PLATFORMS[p].levels.forEach(([k,dim])=>{ const set=STATE.sel[p][k];
+    if(ex!==k && set.size){ fM=fM.filter(r=>set.has(r[dim])); fS=fS.filter(r=>set.has(r[dim])); } });
+  return {fM,fS};
+}
+function platPrevTotals(p, pw){
+  let fM=ADS.filter(r=>r.p===p && inRange(r.d,pw.from,pw.to)), fS=LEADS.filter(r=>r.p===p && inRange(r.d,pw.from,pw.to));
+  PLATFORMS[p].levels.forEach(([k,dim])=>{ const set=STATE.sel[p][k];
+    if(set.size){ fM=fM.filter(r=>set.has(r[dim])); fS=fS.filter(r=>set.has(r[dim])); } });
+  return totals(fS,fM);
+}
+function selDim(p,dim,key,ctrl){
+  const sets=STATE.sel[p], s=sets[dim];
   if(ctrl){ s.has(key)?s.delete(key):s.add(key); }
   else { const sole=s.has(key)&&s.size===1&&!Object.entries(sets).some(([k2,x])=>k2!==dim&&x.size);
     Object.values(sets).forEach(x=>x.clear()); if(!sole) s.add(key); }
-  renderMeta();
+  renderPlatform(p);
 }
-function metaPrevTotals(pw){
-  let fM=META.filter(m=>inRange(m.d,pw.from,pw.to));
-  let fS=SALES.filter(s=>s.meta && inRange(s.d,pw.from,pw.to));
-  if(STATE.mSelC.size){fM=fM.filter(r=>STATE.mSelC.has(r.camp));fS=fS.filter(r=>STATE.mSelC.has(r.camp));}
-  if(STATE.mSelA.size){fM=fM.filter(r=>STATE.mSelA.has(r.adset));fS=fS.filter(r=>STATE.mSelA.has(r.adset));}
-  return totals(fS,fM);
-}
-function renderMeta(){
-  const F=metaScope(null), fM=F.fM, fS=F.fS;
+function renderPlatform(p){
+  const P=PLATFORMS[p], F=platScope(p,null), fM=F.fM, fS=F.fS;
   const t=totals(fS,fM);
-  const pw=prevWindow(); const tp = pw ? metaPrevTotals(pw) : null;
-  renderFunnel('metaFunnel', funnelSteps(t, tp));
+  const pw=prevWindow(); const tp = pw ? platPrevTotals(p,pw) : null;
+  renderFunnel(P.funnel, funnelSteps(t, tp, P.L));
   const dd=daily(fS,fM);
-  convCharts('mCpmCtr','mCpcCpl','mConv', dd);
-  comboChart('mCombo', dd);
-  const aggG=buildAgg(fS,[], 'adset');
-  hbar('mGroup', Object.entries(aggG).map(([label,a])=>({label,v:a.leads})), x=>x.v, cvar('--chart-faturamento'), 10, intf);
-  dayTable('tDaily', dd, t);
+  convCharts(P.cpmctr,P.cpccpl,P.conv, dd);
+  comboChart(P.combo, dd);
+  const aggBar=buildAgg(fS,fM,P.barDim);
+  hbar(P.bar, Object.entries(aggBar).map(([label,a])=>({label,v:a.leads})).filter(x=>x.v>0), x=>x.v, cvar('--chart-faturamento'), 10, intf);
+  dayTable(P.daily, dd, t);
 
-  function hierRows(map){ return Object.entries(map).map(([k,a])=>({k, cells:Object.assign({dim:k}, metricCells(a,derive(a)))})); }
-  function totRowOf(tt){ return Object.assign({dim:null}, metricCells(tt,derive(tt))); }
-  const Sc=metaScope('C'), Sa=metaScope('A');
-  renderTable({id:'tCamp', cols:HCOLS.map((c,i)=>i===0?{...c,label:'Campanha'}:c), rows:hierRows(buildAgg(Sc.fS,Sc.fM,'camp')), total:totRowOf(totals(Sc.fS,Sc.fM)),
-    selectable:true, selSet:STATE.mSelC, onSelect:(k,e)=>selDim('C',k,e&&(e.ctrlKey||e.metaKey))});
-  renderTable({id:'tAdset', cols:HCOLS.map((c,i)=>i===0?{...c,label:'Grupo de anúncios'}:c), rows:hierRows(buildAgg(Sa.fS,Sa.fM,'adset')), total:totRowOf(totals(Sa.fS,Sa.fM)),
-    selectable:true, selSet:STATE.mSelA, onSelect:(k,e)=>selDim('A',k,e&&(e.ctrlKey||e.metaKey))});
-  cplDimChart('chCamp', Sc.fM, Sc.fS, 'camp');
-  cplDimChart('chAdset', Sa.fM, Sa.fS, 'adset');
+  P.levels.forEach(([k,dim,label,tblId,chId])=>{
+    const S=platScope(p,k), agg=buildAgg(S.fS,S.fM,dim);
+    let cols=HCOLS.map((c,i)=>i===0?{...c,label}:c);
+    if(dim==='ad') cols=cols.concat([{key:'link',label:'Criativo',type:'link',w:90}]);
+    const rows=Object.entries(agg).map(([kk,a])=>({k:kk, cells:Object.assign({dim:kk, link:AD_LINKS[kk]||null}, metricCells(a,derive(a)))}));
+    const tt=totals(S.fS,S.fM);
+    renderTable({id:tblId, cols, rows, total:Object.assign({dim:null, link:null}, metricCells(tt,derive(tt))),
+      selectable:true, selSet:STATE.sel[p][k], onSelect:(kk,e)=>selDim(p,k,kk,e&&(e.ctrlKey||e.metaKey))});
+    cplDimChart(chId, S.fM, S.fS, dim);
+  });
 
-  document.getElementById('qCount').textContent=fS.length+' leads';
-  const rows=fS.slice().sort((a,b)=>(a.d<b.d?1:-1));
-  renderTable({id:'tQual',
-    cols:[{key:'d',label:'Data',type:'date'},{key:'nm',label:'Nome',type:'dim'},{key:'camp',label:'Campanha',type:'dim',big:true},
-      {key:'adset',label:'Grupo de anúncios',type:'dim',w:200},{key:'st',label:'Status',type:'dim',w:110}],
-    rows:rows.map((s,i)=>({k:'s'+i, cells:{d:s.d,nm:s.nm,camp:s.camp,adset:s.adset,st:s.st}}))});
+  if(P.leadsTable){
+    document.getElementById('qCount').textContent=fS.length+' leads';
+    const rows=fS.slice().sort((a,b)=>(a.d<b.d?1:-1));
+    renderTable({id:P.leadsTable,
+      cols:[{key:'d',label:'Data',type:'date'},{key:'nm',label:'Nome',type:'dim'},{key:'camp',label:'Campanha',type:'dim',big:true},
+        {key:'adset',label:'Grupo de anúncios',type:'dim',w:200},{key:'st',label:'Status',type:'dim',w:110}],
+      rows:rows.map((s,i)=>({k:'s'+i, cells:{d:s.d,nm:s.nm,camp:s.camp,adset:s.adset,st:s.st}}))});
+  }
 }
 
 /* ---------------- PAGE: Relatórios ----------------
-   Total = todos os leads · Tráfego = só leads atribuídos à plataforma.
+   Total = todos os leads · Tráfego = mídia paga (Google atribuído + conversas Meta).
    Código de cor em CPL e Tx Conversão (metas em build/config.py; 0 = sem cor). */
 const CPL_TARGET=B.cpl_target, CONV_TARGET=B.conv_target;
 const REL_BAND_LO=(B.report_band_low!=null?B.report_band_low:0.7);
@@ -431,7 +456,7 @@ function renderRelBrief(){
   wrap.innerHTML = item.html || item.texto || '<div class="rel-brief-empty">Sem conteúdo.</div>';
 }
 function renderRelatorios(){
-  const fM=metaActive(), fSall=salesActive(), fSads=fSall.filter(s=>s.meta);
+  const fM=adsActive(), fSall=leadsActive(), fSads=fSall.filter(s=>s.p);
   const tTot=totals(fSall,fM), tAds=totals(fSads,fM);
   const dvT=derive(tTot), dvA=derive(tAds);
 
@@ -460,12 +485,13 @@ function renderRelatorios(){
     return [{v:esc(name),cls:'dim'},{v:brl(d.gasto)},{v:brl(d.cpm)},{v:intf(ag.cl)},{v:brl(d.cpc)},{v:pct(d.ctr)},
       {v:intf(ag.leads)},{v:brl(d.cpl),cls:relColor(d.cpl,'cpl')},{v:pct(d.conv),cls:relColor(d.conv,'conv')}]; };
   const hcols=lbl=>[{label:lbl,cls:'dim'},{label:'Gasto'},{label:'CPM'},{label:'Cliques'},{label:'CPC'},{label:'CTR'},{label:'Leads'},{label:'CPL'},{label:'Tx Conv.'}];
-  const aggC=buildAgg(fSads,fM,'camp');
+  const aggC=buildAgg(fSads,fM,'camp');  /* campanhas Google e Meta têm nomes distintos */
   relRenderTable('relCamp', hcols('Campanha'),
     Object.entries(aggC).sort((a,b)=>b[1].sp-a[1].sp).map(([n,ag])=>rowOf(n,ag)),
     rowOf('Total',tAds).map((c,i)=>i===0?{v:'Total',cls:'dim'}:c));
 
-  const aggG=buildAgg(fSads,fM,'adset');
+  const tag=r=>Object.assign({},r,{adset:(r.p==='m'?'[Meta] ':'[Google] ')+r.adset});
+  const aggG=buildAgg(fSads.map(tag),fM.map(tag),'adset');
   const grs=Object.entries(aggG).filter(([n,ag])=>ag.sp>0).map(([name,ag])=>({name,ag,d:derive(ag)}));
   grs.sort((a,b)=>{ const ca=a.d.cpl==null?Infinity:a.d.cpl, cb=b.d.cpl==null?Infinity:b.d.cpl; if(ca!==cb) return ca-cb;
     return (b.d.conv||0)-(a.d.conv||0); });
@@ -498,19 +524,21 @@ function iaRenderWin(){
 function iaBuildData(){
   const winDays=iaWinDays(), from=addDays(TODAY,-(winDays-1)), to=TODAY;
   const inWin=d=>d && d>=from && d<=to;
-  const fM=META.filter(m=>inWin(m.d)), fSall=SALES.filter(s=>inWin(s.d)), fSads=fSall.filter(s=>s.meta);
-  const t=totals(fSall,fM), ta=totals(fSads,fM);
-  const top=(dim,lim)=>Object.entries(buildAgg(fSads,fM,dim)).sort((a,b)=>b[1].sp-a[1].sp).slice(0,lim)
-    .map(([nome,a])=>Object.assign({nome}, iaMetricRow(a,derive(a))));
+  const fM=ADS.filter(m=>inWin(m.d)), fSall=LEADS.filter(s=>inWin(s.d));
+  const t=totals(fSall,fM);
+  const plat=p=>{ const a=totals(fSall.filter(s=>s.p===p), fM.filter(m=>m.p===p)); return iaMetricRow(a,derive(a)); };
+  const top=(p,dim,lim)=>{ const fS=fSall.filter(s=>s.p===p), fm=fM.filter(m=>m.p===p);
+    return Object.entries(buildAgg(fS,fm,dim)).sort((a,b)=>b[1].sp-a[1].sp).slice(0,lim)
+      .map(([nome,a])=>Object.assign({nome}, iaMetricRow(a,derive(a)))); };
   return {
     periodo:{de:from,ate:to,janela_ia:STATE.iaWin},
-    funil:"Captação de leads: Anúncio ("+PLAT+") → Página → Lead. Sem vendas/faturamento.",
-    obs:"Taxas em fração 0-1. tx_conversao = Leads/Cliques; cpl = Gasto/Leads atribuídos à plataforma. total_todos_leads inclui orgânico/direto.",
-    total_todos_leads: iaMetricRow(t,derive(t)),
-    total_plataforma: iaMetricRow(ta,derive(ta)),
-    serie_diaria: daily(fSads,fM).map(x=>Object.assign({d:x.d}, iaMetricRow(x,derive(x)))),
-    campanhas: top('camp',10),
-    grupos_de_anuncios: top('adset',15),
+    funil:"Captação de leads: Anúncio → Clique → Lead. Google: lead = formulário/WhatsApp do site com UTM. Meta: lead = conversa iniciada no WhatsApp. Sem vendas/faturamento.",
+    obs:"Taxas em fração 0-1. tx_conversao = Leads pagos/Cliques; cpl = Gasto/Leads pagos. total inclui orgânico.",
+    total: iaMetricRow(t,derive(t)),
+    google_ads: plat('g'), meta_ads: plat('m'),
+    serie_diaria: daily(fSall,fM).map(x=>Object.assign({d:x.d}, iaMetricRow(x,derive(x)))),
+    google_campanhas: top('g','camp',10), google_grupos: top('g','adset',15),
+    meta_campanhas: top('m','camp',10), meta_conjuntos: top('m','adset',15), meta_anuncios: top('m','ad',20),
   };
 }
 function iaBackendUrl(){ return iaNormUrl(localStorage.getItem('ia_backend')||B.ia_worker_url||''); }
@@ -666,15 +694,16 @@ function ppApply(){
 
 /* ---------------- navigation & boot ---------------- */
 const HAS_IA = !!B.ia_worker_url;
-function setPage(p){ if(p==='ia'&&!HAS_IA) p='geral'; STATE.page=p;
+const PAGES={geral:'Visão Geral', google:'Google Ads', meta:'Meta Ads', rel:'Relatórios', ia:'IA Insights'};
+function setPage(p){ if(!PAGES[p]||(p==='ia'&&!HAS_IA)) p='geral'; STATE.page=p;
   document.querySelectorAll('.nav-item').forEach(n=>n.classList.toggle('active',n.dataset.page===p));
-  ['geral','meta','rel','ia'].forEach(id=>document.getElementById('page-'+id).classList.toggle('active',p===id));
-  document.getElementById('ptitle').textContent = p==='meta'?PLAT:(p==='rel'?'Relatórios':(p==='ia'?'IA Insights':'Visão Geral'));
+  Object.keys(PAGES).forEach(id=>document.getElementById('page-'+id).classList.toggle('active',p===id));
+  document.getElementById('ptitle').textContent = PAGES[p];
   document.getElementById('navToggle').checked=false;
   history.replaceState(null,'', '#'+p);
   renderAll();
 }
-function renderAll(){ if(STATE.page==='meta') renderMeta(); else if(STATE.page==='rel') renderRelatorios(); else if(STATE.page==='ia') renderIA(); else renderGeral(); }
+function renderAll(){ if(STATE.page==='google') renderPlatform('g'); else if(STATE.page==='meta') renderPlatform('m'); else if(STATE.page==='rel') renderRelatorios(); else if(STATE.page==='ia') renderIA(); else renderGeral(); }
 
 function applyTheme(){ const t=localStorage.getItem('dm_theme'); if(t==='light') document.documentElement.removeAttribute('data-theme'); else document.documentElement.setAttribute('data-theme','dark'); }
 applyTheme();
@@ -688,7 +717,7 @@ document.getElementById('ppCancel').addEventListener('click',ppClose);
 document.getElementById('periodPop').addEventListener('click',e=>e.stopPropagation());
 document.addEventListener('click',()=>{ if(ppIsOpen()) ppClose(); });
 document.addEventListener('keydown',e=>{ if(e.key==='Escape'&&ppIsOpen()) ppClose(); });
-document.getElementById('clearBtn').addEventListener('click',()=>{ STATE.mSelC.clear();STATE.mSelA.clear();STATE.selDays.clear(); applyPreset('todo'); });
+document.getElementById('clearBtn').addEventListener('click',()=>{ Object.values(STATE.sel).forEach(o=>Object.values(o).forEach(x=>x.clear()));STATE.selDays.clear(); applyPreset('todo'); });
 document.getElementById('refreshBtn').addEventListener('click',function(){ this.classList.add('loading'); goRefresh(); });
 
 document.getElementById('iaCfgBtn').addEventListener('click',()=>{ const c=document.getElementById('iaConfig');
@@ -706,8 +735,6 @@ document.getElementById('iaGen').addEventListener('click',iaGenerate);
 document.title=(B.client_sub?B.client_sub+' · ':'')+(B.client_name||'Dashboard');
 document.getElementById('logoMain').textContent=B.client_name||'—';
 document.getElementById('logoSub').textContent=B.client_sub||'';
-document.getElementById('navPlat').textContent=PLAT;
-document.querySelectorAll('.platName').forEach(el=>el.textContent=PLAT);
 document.getElementById('taxLabel').textContent=B.tax_label||'Imposto';
 if(TAX===1) document.getElementById('taxToggle').style.display='none';
 if(!HAS_IA) document.getElementById('navIa').style.display='none';
@@ -729,7 +756,7 @@ document.getElementById('buildFoot2').textContent='· build __BUILD_ID__';
 
 syncDateInputs(); iaStatusText();
 document.getElementById('taxToggle').classList.toggle('on', STATE.tax);
-setPage(location.hash==='#meta'?'meta':(location.hash==='#rel'?'rel':(location.hash==='#ia'?'ia':'geral')));
+setPage((location.hash||'#geral').slice(1));
 
 /* ---------------- Aviso de nova versão (sem recarregar por cima do usuário) ----------------
    O build publica uma versão nova a cada ~30 min, mas o GitHub Pages serve o HTML

@@ -15,12 +15,12 @@ grep -rn "PREENCHE[R]" --exclude-dir=.git .
 ## O que é
 
 Dashboard de **Controle de Tráfego Pago** — BI estático (HTML/CSS/JS + Chart.js
-via CDN) no **GitHub Pages**, cruzando **Google Ads** com a lista de **Leads**.
+via CDN) no **GitHub Pages**, cruzando **Google Ads** e **Meta Ads** com a lista de **Leads**.
 Atualiza a cada ~30 min (GitHub Actions disparado pelo cron-job.org).
 
 - **URL pública:** `https://znt-performance.github.io/dash-divine-motel/`
 - **Cliente/projeto:** Divine Motel — Captação de Leads
-- **Sigla do funil:** `DM` (`FUNNEL_PREFIX = "DM_"`)
+- **Sigla do funil:** `DM` (`FUNNEL_SIGLA = "DM"`; casa `DM_...` no Google e `DM | ...` no Meta)
 
 ## Fontes de dados (Google Sheets) — somente leitura
 
@@ -30,12 +30,17 @@ Leitura via CSV público (gviz, **pelo nome da aba**; se `GID_*` for preenchido 
 | Fonte | Planilha (`SPREADSHEET_ID*`) | Aba |
 |-------|------------------------------|-----|
 | **Google Ads** | `1kLt35kM8fqIaLe8-EuySsuriKgWP7NuxzM7U0oU-Ld0` ("Divine Motel - Extração Dashboard") | Google Ads |
+| **Meta Ads** | `1kLt35kM8fqIaLe8-EuySsuriKgWP7NuxzM7U0oU-Ld0` (mesma planilha) | Meta Ads |
 | **Leads** | `1EauNuu3Mh79S9Eo0cGQ-HYFXNkWpsvqE-iZVJ8q0Ws4` ("Divine Motel - Leads com UTMs") | Leads |
 
-Usar **apenas** essas duas abas.
+Usar **apenas** essas três abas.
 
 **Colunas reais — Google Ads:**
 Day · Campaign Name · Ad Group Name · Cost (Spend) · Impressions · Clicks
+
+**Colunas reais — Meta Ads:**
+Day · Campaign Name · Ad Set Name · Ad Name · Impressions · Link Clicks ·
+Messaging Conversations Started · Amount Spent · Creative Instagram Permalink
 
 **Colunas reais — Leads:**
 Data e hora · Nome · Telefone · Plataforma · Captura · Quando precisa · Pessoas ·
@@ -45,6 +50,11 @@ Click ID · Status · Data do pernoite · Valor · Responsável · Observações
 
 ### Pontos de atenção (verificado em 20/11/2026)
 - Não há coluna de anúncio no Google Ads → hierarquia vai até **Grupo de anúncios**.
+- Meta Ads (verificado em 24/11/2026): campanha de mensagem/WhatsApp — os leads do Meta
+  **não** entram na aba Leads (nenhuma UTM de Meta lá). Lead do Meta = `Messaging
+  Conversations Started`. Hierarquia Campanha → Conjunto → Anúncio, com link do criativo.
+- **Imposto do Meta:** `META_TAX_FACTOR = 1.1385`, aplicado **só ao gasto do Meta** quando o
+  toggle "Imposto Meta" está ligado (padrão). Google sem imposto.
 - `Cost (Spend)` vem com vírgula decimal (`8,82`); o `to_float` trata.
 - `utm_medium` = Ad Group Name em minúsculas com hífen (`Moteis perto de mim` →
   `moteis-perto-de-mim`); os 3 grupos atuais casam 100%.
@@ -57,12 +67,16 @@ Click ID · Status · Data do pernoite · Valor · Responsável · Observações
 Não há etapa de MQL nesta dashboard (lead = qualquer linha válida da aba Leads).
 
 ## Funil e métricas
-`Anúncio → Página → Lead` (sem VSL, sem vendas/faturamento)
+`Anúncio → Clique → Lead` (sem VSL, sem vendas/faturamento)
+- Google: lead = linha da aba Leads atribuída à campanha (formulário/WhatsApp do site).
+- Meta: lead = conversa iniciada (Messaging Conversations Started); cliques = Link Clicks.
 
 Gasto · Impressões · CPM · Cliques · CPC · CTR · Leads · CPL (Gasto/Leads) ·
 Tx Conversão (Leads/Cliques).
-- Visão Geral: **Leads = todos** os leads; CPL e Tx Conversão = só leads atribuídos ao Google Ads.
-- Aba Google Ads: tudo só Google Ads.
+- Visão Geral: **Google + Meta**. Leads = todos os leads da planilha + conversas do Meta;
+  CPL e Tx Conversão = só leads de mídia paga (Google atribuído + conversas Meta).
+  Tabela "Por plataforma" separa Google / Meta / Orgânico.
+- Abas Google Ads e Meta Ads: cada uma só com a sua plataforma.
 
 ### Atribuição
 Lead é do Google Ads quando `utm_campaign` = `Campaign Name` (normalizado) de
@@ -77,9 +91,10 @@ uma campanha da sigla do funil; o grupo vem de `slug(utm_medium)` =
 - Mapeamento UTM → Google Ads: `utm_campaign → Campaign Name` · `utm_medium → Ad Group Name (slug)` · `utm_source = google-ads`.
 
 ## Abas da dashboard
-- **Visão Geral** — funil, evolução diária, tabela diária (heatmap), CPM/CTR, CPC/CPL, Tx Conversão, leads por origem.
+- **Visão Geral** — Google + Meta: funil, evolução diária, tabela diária (heatmap), tabela Por plataforma, CPM/CTR, CPC/CPL, Tx Conversão.
 - **Google Ads** — mesmo funil só Google Ads + tabelas Campanha → Grupo (clicáveis/filtro) + lista de leads.
-- **Relatórios** — cards Total × Tráfego, dia a dia, campanhas, melhores/piores grupos.
+- **Meta Ads** — funil só Meta (conversas) + Campanha → Conjunto → Anúncio (com link do criativo).
+- **Relatórios** — cards Total × Tráfego (Google + Meta), dia a dia, campanhas, melhores/piores grupos/conjuntos.
   Metas opcionais `CPL_TARGET`/`CONV_TARGET` em `build/config.py` (0 = sem cor).
   Briefing do Gestor só aparece se existir `build/relatorios.json` (não configurado).
 - **IA Insights** — oculta enquanto `IA_WORKER_URL` estiver vazio (ver `SETUP-IA.md`).
@@ -89,7 +104,7 @@ uma campanha da sigla do funil; o grupo vem de `slug(utm_medium)` =
 ## Arquitetura / arquivos
 
 ```
-build/build.py             # lê as 2 abas (read-only), emite meta[] (Google Ads) / sales[] (leads)
+build/build.py             # lê as 3 abas (read-only), emite ads[] (p=g Google / p=m Meta) e leads[]
 build/config.py            # CONFIG DO CLIENTE
 build/config.example.py    # modelo com marcadores
 build/template.html        # esqueleto HTML
@@ -100,7 +115,7 @@ SETUP-CRON.md              # valores do cron-job.org
 ```
 
 Teste local (CSVs exportados, não commitar):
-`python build/build.py --meta-file ads.csv --sales-file leads.csv --out dist/index.html`
+`python build/build.py --google-file google.csv --meta-file meta.csv --leads-file leads.csv --out dist/index.html`
 
 ### Cache-bust
 `<meta name="build">` com o `build_id` de cada build + `dist/version.json`; o

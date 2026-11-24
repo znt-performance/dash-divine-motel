@@ -23,7 +23,8 @@
     <div class="logo"><div class="logo-main" id="logoMain"></div><div class="logo-sub" id="logoSub"></div></div>
     <div class="sec">Dashboards</div>
     <div class="nav-item active" data-page="geral"><span class="ic">◱</span> Visão Geral</div>
-    <div class="nav-item" data-page="meta"><span class="ic">◨</span> <span id="navPlat">Google Ads</span></div>
+    <div class="nav-item" data-page="google"><span class="ic">◨</span> Google Ads</div>
+    <div class="nav-item" data-page="meta"><span class="ic">◧</span> Meta Ads</div>
     <div class="nav-item" data-page="rel"><span class="ic">▤</span> Relatórios</div>
     <div class="nav-item" data-page="ia" id="navIa"><span class="ic">✦</span> IA Insights</div>
     <div class="foot">Somente leitura · atualiza ~30 min<br><span id="buildFoot"></span></div>
@@ -72,35 +73,40 @@
         <h2 class="sec-title">Funil &amp; evolução diária</h2>
         <div class="grid funnel-grid">
           <div class="card"><div class="funnel" id="geralFunnel"></div>
-            <p class="note">Funil <b>Anúncio → Página → Lead</b>. Leads = <b>todos</b> os leads da planilha (inclui orgânico/direto). <b>CPL</b> e <b>Tx Conversão</b> (Leads/Cliques) consideram <b>só leads atribuídos ao <span class="platName"></span></b>.</p>
+            <p class="note"><b>Google + Meta</b>. Leads = leads da planilha (formulário/WhatsApp do site, inclui orgânico) + <b>conversas iniciadas no Meta</b>. <b>CPL</b> e <b>Tx Conversão</b> (Leads/Cliques) consideram <b>só leads de mídia paga</b> (Google atribuído + conversas Meta).</p>
           </div>
           <div class="panel">
-            <div class="panel-chart"><h3>Evolução diária</h3><p class="hint">Leads (barras) · Gasto (vermelha) · CPL (linha, eixo próprio). Leads = totais.</p><div class="chart-box"><canvas id="gCombo"></canvas></div></div>
+            <div class="panel-chart"><h3>Evolução diária</h3><p class="hint">Leads (barras) · Gasto (vermelha) · CPL (linha, eixo próprio) · Google + Meta.</p><div class="chart-box"><canvas id="gCombo"></canvas></div></div>
             <div class="tbl-wrap tbl-normal"><table class="dt" id="gDaily"></table></div>
-            <p class="note" style="padding:10px 15px 12px">Leads = <b>totais</b>; CPL/Tx Conversão = só <span class="platName"></span>. Heatmap por coluna · último dia no topo · clique numa data para filtrar (Ctrl = várias).</p>
+            <p class="note" style="padding:10px 15px 12px">Google + Meta. Leads = <b>totais</b>; CPL/Tx Conversão = só mídia paga. Heatmap por coluna · último dia no topo · clique numa data para filtrar (Ctrl = várias).</p>
           </div>
+        </div>
+
+        <h2 class="sec-title">Por plataforma</h2>
+        <div class="card" style="padding:0">
+          <div class="tbl-wrap"><table class="dt" id="gPlat"></table></div>
+          <p class="note" style="padding:10px 15px">Google: lead = formulário/WhatsApp do site com UTM da campanha (aba Leads). Meta: lead = conversa iniciada (Messaging Conversations Started). Orgânico/outros = leads da planilha sem campanha paga.</p>
         </div>
 
         <h2 class="sec-title">Indicadores por dia</h2>
         <div class="funnel-charts">
           <div class="card"><h3>CPM e CTR por dia</h3><p class="hint">CPM (R$, esq.) · CTR (%, dir.)</p><div class="chart-box chart-sm"><canvas id="gCpmCtr"></canvas></div></div>
           <div class="card"><h3>CPC e CPL por dia</h3><p class="hint">CPC = Gasto/Cliques · CPL = Gasto/Leads</p><div class="chart-box chart-sm"><canvas id="gCpcCpl"></canvas></div></div>
-          <div class="card"><h3>Tx Conversão por dia</h3><p class="hint">Leads/Cliques (<span class="platName"></span>)</p><div class="chart-box chart-sm"><canvas id="gConv"></canvas></div></div>
-          <div class="card" style="padding:0"><div style="padding:14px 15px 4px"><h3>Leads por origem</h3><p class="hint" style="margin:0">utm_source (ou Plataforma) · todos os leads</p></div><div class="tbl-wrap" style="max-height:260px"><table class="dt" id="gSrc"></table></div></div>
+          <div class="card"><h3>Tx Conversão por dia</h3><p class="hint">Leads pagos/Cliques (Google + Meta)</p><div class="chart-box chart-sm"><canvas id="gConv"></canvas></div></div>
         </div>
       </div>
 
       <!-- ===================== PÁGINA 2: GOOGLE ADS ===================== -->
-      <div class="page" id="page-meta">
+      <div class="page" id="page-google">
         <h2 class="sec-title">Funil &amp; combinação diária</h2>
         <div class="grid funnel-grid">
           <div class="card"><div class="funnel" id="metaFunnel"></div>
-            <p class="note">Considera <b>apenas leads atribuídos ao <span class="platName"></span></b> (utm_campaign = Campaign Name · utm_medium = Ad Group Name).</p>
+            <p class="note">Considera <b>apenas leads atribuídos ao Google Ads</b> (lead da planilha com utm_campaign = Campaign Name · utm_medium = Ad Group Name).</p>
           </div>
           <div class="panel">
-            <div class="panel-chart"><h3>Combinação diária</h3><p class="hint">Leads (barras) · Gasto (vermelha) · CPL (linha, eixo próprio) — só <span class="platName"></span>.</p><div class="chart-box"><canvas id="mCombo"></canvas></div></div>
+            <div class="panel-chart"><h3>Combinação diária</h3><p class="hint">Leads (barras) · Gasto (vermelha) · CPL (linha, eixo próprio) — só Google Ads.</p><div class="chart-box"><canvas id="mCombo"></canvas></div></div>
             <div class="tbl-wrap tbl-normal"><table class="dt" id="tDaily"></table></div>
-            <p class="note" style="padding:10px 15px 12px">Todos os valores consideram <b>apenas <span class="platName"></span></b>. Heatmap por coluna · último dia no topo · clique numa data para filtrar (Ctrl = várias).</p>
+            <p class="note" style="padding:10px 15px 12px">Todos os valores consideram <b>apenas Google Ads</b>. Heatmap por coluna · último dia no topo · clique numa data para filtrar (Ctrl = várias).</p>
           </div>
         </div>
 
@@ -127,7 +133,47 @@
         <h2 class="sec-title">Leads <span class="pill q" id="qCount"></span></h2>
         <div class="card" style="padding:0">
           <div class="tbl-wrap" style="max-height:360px"><table class="dt" id="tQual"></table></div>
-          <p class="note" style="padding:10px 15px">Nome <b>abreviado</b> e sem telefone (página pública). Só leads atribuídos ao <span class="platName"></span>.</p>
+          <p class="note" style="padding:10px 15px">Nome <b>abreviado</b> e sem telefone (página pública). Só leads atribuídos ao Google Ads.</p>
+        </div>
+      </div>
+
+      <!-- ===================== PÁGINA 3: META ADS ===================== -->
+      <div class="page" id="page-meta">
+        <h2 class="sec-title">Funil &amp; combinação diária</h2>
+        <div class="grid funnel-grid">
+          <div class="card"><div class="funnel" id="fbFunnel"></div>
+            <p class="note">Só <b>Meta Ads</b>. Leads = <b>conversas iniciadas</b> (Messaging Conversations Started). Cliques = cliques no link. Tx Conversão = Conversas/Cliques.</p>
+          </div>
+          <div class="panel">
+            <div class="panel-chart"><h3>Combinação diária</h3><p class="hint">Conversas (barras) · Gasto (vermelha) · Custo por conversa (linha, eixo próprio).</p><div class="chart-box"><canvas id="fbCombo"></canvas></div></div>
+            <div class="tbl-wrap tbl-normal"><table class="dt" id="fbDaily"></table></div>
+            <p class="note" style="padding:10px 15px 12px">Só Meta Ads. Heatmap por coluna · último dia no topo · clique numa data para filtrar (Ctrl = várias).</p>
+          </div>
+        </div>
+
+        <h2 class="sec-title">Indicadores por dia</h2>
+        <div class="funnel-charts">
+          <div class="card"><h3>CPM e CTR por dia</h3><p class="hint">CPM (R$, esq.) · CTR (%, dir.)</p><div class="chart-box chart-sm"><canvas id="fbCpmCtr"></canvas></div></div>
+          <div class="card"><h3>CPC e CPL por dia</h3><p class="hint">CPC = Gasto/Cliques · CPL = Gasto/Conversas</p><div class="chart-box chart-sm"><canvas id="fbCpcCpl"></canvas></div></div>
+          <div class="card"><h3>Tx Conversão por dia</h3><p class="hint">Conversas/Cliques no link</p><div class="chart-box chart-sm"><canvas id="fbConv"></canvas></div></div>
+          <div class="card"><h3>Conversas por anúncio</h3><p class="hint">Top 10 · Ad Name</p><div class="chart-box chart-sm"><canvas id="fbAdBar"></canvas></div></div>
+        </div>
+
+        <h2 class="sec-title">Otimização · Campanha → Conjunto → Anúncio</h2>
+        <div class="table-chart-pair">
+          <div class="thead-title">Campanhas</div>
+          <div class="tbl-wrap tbl-normal"><table class="dt" id="fbCamp"></table></div>
+          <div class="pair-chart"><div class="pc-title">CPL por campanha, por dia</div><canvas id="fbChCamp"></canvas></div>
+        </div>
+        <div class="table-chart-pair">
+          <div class="thead-title">Conjuntos</div>
+          <div class="tbl-wrap tbl-normal"><table class="dt" id="fbAdset"></table></div>
+          <div class="pair-chart"><div class="pc-title">CPL por conjunto, por dia</div><canvas id="fbChAdset"></canvas></div>
+        </div>
+        <div class="table-chart-pair">
+          <div class="thead-title">Anúncios</div>
+          <div class="tbl-wrap tbl-double"><table class="dt" id="fbAd"></table></div>
+          <div class="pair-chart"><div class="pc-title">CPL por anúncio, por dia</div><canvas id="fbChAd"></canvas></div>
         </div>
       </div>
 
@@ -154,7 +200,7 @@
             <div class="rel-cards" id="relCardsTotal"></div>
           </div>
           <div class="rel-ov-block">
-            <div class="rel-ov-head">Visão Geral Tráfego <span>apenas <span class="platName"></span></span></div>
+            <div class="rel-ov-head">Visão Geral Tráfego <span>Google + Meta</span></div>
             <div class="rel-cards" id="relCardsAds"></div>
           </div>
         </div>
@@ -162,7 +208,7 @@
         <h2 class="sec-title">Funil dia a dia</h2>
         <div class="card" style="padding:0">
           <div class="tbl-wrap tbl-normal"><table class="dt rel-dt" id="relDaily"></table></div>
-          <p class="note" style="padding:10px 15px">Total = todos os leads · Ads = só <span class="platName"></span> (separados pela barra vertical). <b>CPL</b> e <b>Tx Conversão</b> com código de cor conforme a meta (se definida). Último dia no topo.</p>
+          <p class="note" style="padding:10px 15px">Total = todos os leads · Ads = mídia paga, Google + Meta (separados pela barra vertical). <b>CPL</b> e <b>Tx Conversão</b> com código de cor conforme a meta (se definida). Último dia no topo.</p>
         </div>
 
         <h2 class="sec-title">Visão por campanha</h2>
@@ -170,7 +216,7 @@
           <div class="tbl-wrap"><table class="dt rel-dt" id="relCamp"></table></div>
         </div>
 
-        <h2 class="sec-title">Grupos de anúncios · destaques e alertas</h2>
+        <h2 class="sec-title">Grupos / conjuntos · destaques e alertas</h2>
         <div class="rel-ads-grid">
           <div class="card" style="padding:0">
             <div class="rel-ads-head good">▲ Melhores grupos</div>
@@ -181,7 +227,7 @@
             <div class="tbl-wrap"><table class="dt rel-dt" id="relWorst"></table></div>
           </div>
         </div>
-        <p class="note">Ranqueados por CPL (menor = melhor; Tx Conversão como desempate) entre grupos com gasto no período.</p>
+        <p class="note">Grupos (Google) e conjuntos (Meta) ranqueados por CPL (menor = melhor; Tx Conversão como desempate) entre os com gasto no período.</p>
 
         <h2 class="sec-title">Briefing do Gestor</h2>
         <div class="rel-brief" id="relBrief"></div>
