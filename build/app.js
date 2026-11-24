@@ -712,6 +712,18 @@ document.getElementById('taxLabel').textContent=B.tax_label||'Imposto';
 if(TAX===1) document.getElementById('taxToggle').style.display='none';
 if(!HAS_IA) document.getElementById('navIa').style.display='none';
 document.getElementById('updated').innerHTML='Última atualização:<br>'+B.generated_at_brt+' (BRT)';
+/* Aviso de dados velhos: se o último build tem mais de 2 h, a atualização
+   automática (cron-job.org -> Actions) provavelmente parou. */
+(function staleCheck(){
+  const id=String(B.build_id||''); if(id.length<12) return;
+  const built=Date.UTC(+id.slice(0,4),+id.slice(4,6)-1,+id.slice(6,8),+id.slice(8,10),+id.slice(10,12));
+  const h=(Date.now()-built)/3600000;
+  if(h>2){
+    const el=document.getElementById('updated');
+    el.innerHTML+='<br><span style="color:var(--heat-gasto);font-weight:600">⚠ dados de '+(h<48?Math.floor(h)+' h':Math.floor(h/24)+' dias')+' atrás</span>';
+    el.title='O build automático não roda há mais de 2 h. Confira o cron-job.org e a aba Actions do repositório.';
+  }
+})();
 document.getElementById('buildFoot').textContent='build __BUILD_ID__';
 document.getElementById('buildFoot2').textContent='· build __BUILD_ID__';
 
